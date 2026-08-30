@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -26,6 +27,9 @@ type Client struct {
 	minInterval  time.Duration
 	dailyReserve int64
 
+	// mu serializes requests. One client is shared across concurrent
+	// callers, and pacing only means anything if they queue behind it.
+	mu             sync.Mutex
 	lastRequest    time.Time
 	dailyRemaining int64
 	dailyReset     time.Time
@@ -55,7 +59,11 @@ func NewClient(token string, opts ...Option) *Client {
 
 // DailyRemaining reports the last daily-remaining value seen, or -1 before
 // the first request.
-func (c *Client) DailyRemaining() int64 { return c.dailyRemaining }
+func (c *Client) DailyRemaining() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dailyRemaining
+}
 
 type gqlRequest struct {
 	Query     string         `json:"query"`
@@ -77,6 +85,9 @@ type gqlResponse struct {
 // Query runs one GraphQL query and returns the raw data payload.
 // It paces requests, honors 429s, and retries transient failures.
 func (c *Client) Query(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.dailyRemaining >= 0 && c.dailyRemaining <= c.dailyReserve {
 		if wait := time.Until(c.dailyReset); wait > 0 {
 			return nil, fmt.Errorf("%w (resets in %s)", ErrDailyExhausted, wait.Round(time.Minute))

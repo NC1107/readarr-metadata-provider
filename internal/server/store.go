@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"regexp"
 	"strconv"
@@ -113,8 +114,9 @@ type store struct {
 	db          *sql.DB
 	hasNormName bool
 
-	fuzzyOnce  sync.Once
-	fuzzyNames []fuzzyName
+	fuzzyMu     sync.Mutex
+	fuzzyLoaded bool
+	fuzzyNames  []fuzzyName
 }
 
 type fuzzyName struct {
@@ -306,18 +308,43 @@ func (s *store) seriesPositionWorks(query string) []int64 {
 	if err != nil {
 		return nil
 	}
-	var seriesID int64
-	err = s.db.QueryRow(`
-		SELECT s.id FROM series s
-		WHERE s.name LIKE '%' || ?1 || '%'
-		ORDER BY (SELECT COALESCE(SUM(w.ratings_count), 0)
-			FROM work_series ws JOIN works w ON w.id = ws.work_id
-			WHERE ws.series_id = s.id) DESC
-		LIMIT 1`, name).Scan(&seriesID)
-	if err != nil {
+	// A short fragment matches a large share of the series table, and the
+	// popularity ranking below costs a join per candidate, so cap both the
+	// fragment length and how many candidates are considered.
+	if len(name) < 4 {
 		return nil
 	}
 	rows, err := s.db.Query(`
+		SELECT id FROM series WHERE name LIKE '%' || ?1 || '%' LIMIT 40`, name)
+	if err != nil {
+		return nil
+	}
+	var candidates []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			candidates = append(candidates, id)
+		}
+	}
+	rows.Close()
+
+	var seriesID, bestPop int64
+	for _, id := range candidates {
+		var pop int64
+		if s.db.QueryRow(`
+			SELECT COALESCE(SUM(w.ratings_count), 0)
+			FROM work_series ws JOIN works w ON w.id = ws.work_id
+			WHERE ws.series_id = ?`, id).Scan(&pop) != nil {
+			continue
+		}
+		if seriesID == 0 || pop > bestPop {
+			seriesID, bestPop = id, pop
+		}
+	}
+	if seriesID == 0 {
+		return nil
+	}
+	works, err := s.db.Query(`
 		SELECT ws.work_id FROM work_series ws
 		JOIN works w ON w.id = ws.work_id
 		WHERE ws.series_id = ? AND ws.position = ?
@@ -326,11 +353,11 @@ func (s *store) seriesPositionWorks(query string) []int64 {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer works.Close()
 	var ids []int64
-	for rows.Next() {
+	for works.Next() {
 		var id int64
-		if rows.Scan(&id) == nil {
+		if works.Scan(&id) == nil {
 			ids = append(ids, id)
 		}
 	}
@@ -401,21 +428,10 @@ func (s *store) fuzzyAuthorID(query string) int64 {
 	if len(norm) < 4 {
 		return 0
 	}
-	s.fuzzyOnce.Do(func() {
-		rows, err := s.db.Query(`SELECT id, name FROM authors`)
-		if err != nil {
-			return
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var f fuzzyName
-			var name string
-			if rows.Scan(&f.id, &name) == nil {
-				f.norm = textnorm.Name(name)
-				s.fuzzyNames = append(s.fuzzyNames, f)
-			}
-		}
-	})
+	if err := s.loadFuzzyNames(); err != nil {
+		log.Printf("fuzzy author matching unavailable: %v", err)
+		return 0
+	}
 
 	qgrams := bigrams(norm)
 	if len(qgrams) == 0 {
@@ -452,6 +468,38 @@ func (s *store) fuzzyAuthorID(query string) int64 {
 		}
 	}
 	return winner
+}
+
+// loadFuzzyNames fills the author-name table on first use. A failure is
+// reported rather than cached, so a transient error does not disable
+// fuzzy matching until the process restarts.
+func (s *store) loadFuzzyNames() error {
+	s.fuzzyMu.Lock()
+	defer s.fuzzyMu.Unlock()
+	if s.fuzzyLoaded {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT id, name FROM authors`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	names := make([]fuzzyName, 0, len(s.fuzzyNames))
+	for rows.Next() {
+		var f fuzzyName
+		var name string
+		if err := rows.Scan(&f.id, &name); err != nil {
+			return err
+		}
+		f.norm = textnorm.Name(name)
+		names = append(names, f)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	s.fuzzyNames = names
+	s.fuzzyLoaded = true
+	return nil
 }
 
 func (s *store) authorPopularity(authorID int64) (int64, int64) {

@@ -291,7 +291,10 @@ func releaseYear(d string) string {
 // following redirect hops the same way Readarr's client would.
 func (u *uiServer) localGET(path string) ([]byte, int, error) {
 	for hop := 0; hop < 4; hop++ {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req, err := http.NewRequest(http.MethodGet, "http://local"+path, nil)
+		if err != nil {
+			return nil, 0, fmt.Errorf("bad request path: %w", err)
+		}
 		rec := httptest.NewRecorder()
 		u.api.ServeHTTP(rec, req)
 		if loc := rec.Header().Get("Location"); rec.Code >= 300 && rec.Code < 400 && loc != "" {
@@ -331,17 +334,26 @@ func (u *uiServer) fetchHardcover(ctx context.Context, mode, query string) (res 
 	var editionID int64
 	var n int
 	var err error
-	switch mode {
-	case "search", "":
+	if mode != "search" && mode != "" {
+		// Every other mode addresses a row by id. Parsing before building
+		// the query keeps caller-supplied text out of the GraphQL source.
+		id, parseErr := strconv.ParseInt(strings.TrimSpace(query), 10, 64)
+		if parseErr != nil || id <= 0 {
+			res.Error = fmt.Sprintf("%q is not an id", query)
+			return res
+		}
+		switch mode {
+		case "work":
+			books, n, err = u.hcBooks(ctx, fmt.Sprintf(`{id: {_eq: %d}}`, id), 1, "")
+		case "book":
+			editionID = id
+			books, n, err = u.hcBooks(ctx, fmt.Sprintf(`{editions: {id: {_eq: %d}}}`, id), 1, "")
+		case "author":
+			books, n, err = u.hcBooks(ctx, fmt.Sprintf(`{contributions: {author_id: {_eq: %d}}}`, id), 10,
+				`order_by: {ratings_count: desc_nulls_last},`)
+		}
+	} else {
 		books, n, err = u.hcSearchBooks(ctx, query)
-	case "work":
-		books, n, err = u.hcBooks(ctx, fmt.Sprintf(`{id: {_eq: %s}}`, query), 1, "")
-	case "book":
-		editionID, _ = strconv.ParseInt(query, 10, 64)
-		books, n, err = u.hcBooks(ctx, fmt.Sprintf(`{editions: {id: {_eq: %s}}}`, query), 1, "")
-	case "author":
-		books, n, err = u.hcBooks(ctx, fmt.Sprintf(`{contributions: {author_id: {_eq: %s}}}`, query), 10,
-			`order_by: {users_count: desc_nulls_last},`)
 	}
 	res.Bytes = n
 	if err != nil {

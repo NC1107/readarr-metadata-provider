@@ -19,6 +19,15 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+// maxDatasetBytes caps what a download may expand to. The published
+// dataset is ~6.6GB; this leaves headroom without letting a bad URL fill
+// the disk.
+const maxDatasetBytes = 32 << 30
+
+// client bounds the transfer so a stalled server cannot hang first boot
+// forever. The timeout covers the whole body, which is why it is generous.
+var client = &http.Client{Timeout: 2 * time.Hour}
+
 // Ensure guarantees a dataset exists at dbPath, downloading it from url
 // when it does not. An existing file is never touched, so a boot after the
 // first costs nothing.
@@ -71,7 +80,7 @@ func download(ctx context.Context, url, dest string) (int64, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, "", err
 	}
@@ -103,9 +112,12 @@ func download(ctx context.Context, url, dest string) (int64, string, error) {
 		src = dec
 	}
 
-	written, err := io.Copy(f, src)
+	written, err := io.Copy(f, io.LimitReader(src, maxDatasetBytes+1))
 	if err != nil {
 		return 0, "", fmt.Errorf("downloading dataset: %w", err)
+	}
+	if written > maxDatasetBytes {
+		return 0, "", fmt.Errorf("dataset exceeds %s limit", humanBytes(maxDatasetBytes))
 	}
 	if err := f.Sync(); err != nil {
 		return 0, "", err
@@ -122,7 +134,7 @@ func fetchChecksum(ctx context.Context, url string) string {
 	if err != nil {
 		return ""
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return ""
 	}

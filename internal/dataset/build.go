@@ -175,11 +175,23 @@ func (b *Builder) loadWorks(db *sql.DB) error {
 	defer tx.Rollback()
 
 	// Later files (deltas) overwrite earlier rows for the same id.
-	insWork, _ := tx.Prepare(`INSERT INTO works (id, title, users_count, ratings_count, updated_at, json) VALUES (?, ?, ?, ?, ?, ?)
+	insWork, err := tx.Prepare(`INSERT INTO works (id, title, users_count, ratings_count, updated_at, json) VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET title=excluded.title, users_count=excluded.users_count, ratings_count=excluded.ratings_count, updated_at=excluded.updated_at, json=excluded.json`)
-	insWA, _ := tx.Prepare(`INSERT OR REPLACE INTO work_authors (work_id, author_id, role) VALUES (?, ?, ?)`)
-	insWS, _ := tx.Prepare(`INSERT OR REPLACE INTO work_series (work_id, series_id, position) VALUES (?, ?, ?)`)
-	insEd, _ := tx.Prepare(`INSERT OR REPLACE INTO editions (id, work_id, isbn13, isbn10, asin) VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	insWA, err := tx.Prepare(`INSERT OR REPLACE INTO work_authors (work_id, author_id, role) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	insWS, err := tx.Prepare(`INSERT OR REPLACE INTO work_series (work_id, series_id, position) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	insEd, err := tx.Prepare(`INSERT OR REPLACE INTO editions (id, work_id, isbn13, isbn10, asin) VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
 
 	n := 0
 	err = b.walkJSONL([]string{"books", "books-delta"}, func(line []byte) error {
@@ -255,10 +267,16 @@ func (b *Builder) loadAuthorsAndSeries(db *sql.DB) error {
 	}
 	defer tx.Rollback()
 
-	insAuthor, _ := tx.Prepare(`INSERT INTO authors (id, name, norm_name, updated_at, json) VALUES (?, ?, ?, ?, ?)
+	insAuthor, err := tx.Prepare(`INSERT INTO authors (id, name, norm_name, updated_at, json) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET name=excluded.name, norm_name=excluded.norm_name, updated_at=excluded.updated_at, json=excluded.json
 		WHERE excluded.updated_at >= authors.updated_at`)
-	insSeries, _ := tx.Prepare(`INSERT OR REPLACE INTO series (id, name, json) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	insSeries, err := tx.Prepare(`INSERT OR REPLACE INTO series (id, name, json) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
 
 	putAuthor := func(raw json.RawMessage) error {
 		var k authorKey

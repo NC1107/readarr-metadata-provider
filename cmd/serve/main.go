@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/NC1107/readarr-metadata-provider/internal/bootstrap"
 	"github.com/NC1107/readarr-metadata-provider/internal/envfile"
@@ -51,8 +53,30 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	srv := &http.Server{
+		Addr:    *addr,
+		Handler: s.Handler(),
+		// Author payloads reach several megabytes, so writes get room;
+		// everything else is bounded so a stalled client cannot pin a
+		// connection open indefinitely.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		log.Print("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
 	log.Printf("serving %s on %s", *dbPath, *addr)
-	log.Fatal(http.ListenAndServe(*addr, s.Handler()))
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
 }
 
 func envOr(key, fallback string) string {
