@@ -71,7 +71,9 @@
     border-bottom: 1px solid var(--line); }
   .issues.ok { color: var(--good); }
   .row { display: flex; gap: 12px; padding: 10px 14px;
-    border-bottom: 1px solid var(--line); align-items: center; }
+    border-bottom: 1px solid var(--line); align-items: center;
+    color: inherit; text-decoration: none; }
+  a.row:hover { background: rgba(122, 162, 247, 0.07); }
   .row:last-child { border-bottom: 0; }
   .row img, .row .noimg { width: 38px; height: 57px; object-fit: cover;
     border-radius: 4px; background: var(--line); flex: none; }
@@ -109,7 +111,7 @@
       </select>
       <button>compare</button>
     </form>
-    <div class="cols" id="cols" hidden>
+    <div class="cols" id="cols">
       <div class="col" id="local"></div>
       <div class="col" id="official"></div>
       <div class="col" id="hardcover"></div>
@@ -128,20 +130,26 @@
 <script>
 const $ = id => document.getElementById(id);
 
+const COLS = [['local', 'local server'], ['official', 'readarr endpoint'], ['hardcover', 'hardcover']];
+for (const [id, name] of COLS) {
+  $(id).innerHTML = `<div class="colhead"><span class="name">${name}</span></div>
+    <div class="empty">waiting for a query</div>`;
+}
+
 $('f').addEventListener('submit', async e => {
   e.preventDefault();
   const q = $('q').value.trim();
   if (!q) return;
   $('qerr').hidden = true;
-  $('cols').hidden = false;
-  const loading = `<div class="colhead"><span class="name">…</span></div><div class="empty">querying</div>`;
-  $('local').innerHTML = $('official').innerHTML = $('hardcover').innerHTML = loading;
+  for (const [id, name] of COLS) {
+    $(id).innerHTML = `<div class="colhead"><span class="name">${name}</span></div>
+      <div class="empty">querying…</div>`;
+  }
   try {
     const r = await fetch(`/ui/query?mode=${$('mode').value}&q=${encodeURIComponent(q)}`);
     if (!r.ok) throw new Error(await r.text());
     render(await r.json());
   } catch (err) {
-    $('cols').hidden = true;
     $('qerr').hidden = false;
     $('qerr').textContent = err.message;
   }
@@ -165,12 +173,13 @@ function side(s, otherIDs, otherFailed) {
   if (!s.items.length) return h + `<div class="empty">no results</div>`;
   for (const it of s.items) {
     const cls = otherFailed ? 'match' : (otherIDs.has(it.workId) ? 'match' : 'mismatch');
-    h += `<div class="row ${cls}">
+    const tag = it.url ? `a href="${esc(it.url)}" target="_blank" rel="noopener"` : 'div';
+    h += `<${tag} class="row ${cls}">
       ${it.image ? `<img loading="lazy" src="${esc(it.image)}" alt="">` : `<div class="noimg"></div>`}
       <div><div class="t">${esc(it.title)}</div><div class="s">${esc(it.subtitle || '')}</div></div>
       <div class="r">${it.ratings ? `★ ${it.rating.toFixed(2)}<br>${it.ratings.toLocaleString()} ratings` : ''}
         <br>w${it.workId}</div>
-    </div>`;
+    </${it.url ? 'a' : 'div'}>`;
   }
   return h;
 }

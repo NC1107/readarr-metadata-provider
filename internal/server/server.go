@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/NC1107/readarr-metadata-provider/internal/hcapi"
 )
@@ -23,9 +24,40 @@ type Server struct {
 	hc           *hcapi.Client
 	metrics      *metrics
 	dbPath       string
+	searchLangs  map[string]bool
 
 	statsMu sync.Mutex
 	stats   datasetStats
+}
+
+// langAllowed applies the search language preference: a work is kept when
+// the filter is off, its language is unrecorded or allowed, or the query
+// itself is written in non-Latin script.
+func (s *Server) langAllowed(b *rawBook, query string) bool {
+	if len(s.searchLangs) == 0 {
+		return true
+	}
+	for _, r := range query {
+		if r > 127 {
+			return true
+		}
+	}
+	if len(b.Editions) > 0 && b.Editions[0].Language != nil && b.Editions[0].Language.Code2 != "" {
+		return s.searchLangs[b.Editions[0].Language.Code2]
+	}
+	// No language recorded (common for Hardcover's translated imports):
+	// fall back to the title's script. A mostly non-Latin title is not what
+	// a Latin-script query is after.
+	var latin, letters int
+	for _, r := range b.Title {
+		if unicode.IsLetter(r) {
+			letters++
+			if r < 128 || unicode.Is(unicode.Latin, r) {
+				latin++
+			}
+		}
+	}
+	return letters == 0 || latin*2 >= letters
 }
 
 // datasetStats is filled in the background at startup; count queries over
@@ -68,8 +100,11 @@ func (s *Server) datasetStats() datasetStats {
 }
 
 // New opens the dataset. hcToken is optional; with it, the /ui console adds
-// a live Hardcover comparison column.
-func New(dbPath string, maxWorks int, officialBase, hcToken string) (*Server, error) {
+// a live Hardcover comparison column. searchLangs is a comma-separated list
+// of edition language codes search results may have (empty disables the
+// filter); works with no language recorded always pass, and a query typed
+// in non-Latin script skips the filter so native-language searches work.
+func New(dbPath string, maxWorks int, officialBase, hcToken, searchLangs string) (*Server, error) {
 	st, err := openStore(dbPath)
 	if err != nil {
 		return nil, err
@@ -83,6 +118,12 @@ func New(dbPath string, maxWorks int, officialBase, hcToken string) (*Server, er
 		officialBase: officialBase,
 		metrics:      newMetrics(),
 		dbPath:       dbPath,
+		searchLangs:  map[string]bool{},
+	}
+	for _, l := range strings.Split(searchLangs, ",") {
+		if l = strings.TrimSpace(l); l != "" {
+			s.searchLangs[l] = true
+		}
 	}
 	if hcToken != "" {
 		s.hc = hcapi.NewClient(hcToken)
@@ -193,7 +234,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		authorID, _ := bestAuthorID(b)
-		if authorID == 0 || len(b.Editions) == 0 {
+		if authorID == 0 || len(b.Editions) == 0 || !s.langAllowed(b, query) {
 			continue
 		}
 		results = append(results, searchResource{

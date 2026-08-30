@@ -16,9 +16,10 @@ func main() {
 	addr := flag.String("addr", ":8816", "listen address")
 	maxWorks := flag.Int("max-works", 2000, "maximum works returned per author or series")
 	officialBase := flag.String("official", "", "reference metadata service for the /ui comparison console")
+	searchLangs := flag.String("search-languages", "en", "comma-separated edition language codes search results may have; empty disables the filter (non-Latin queries always bypass it)")
 	flag.Parse()
 
-	s, err := server.New(*dbPath, *maxWorks, *officialBase, hcapi.TokenFromEnv())
+	s, err := server.New(*dbPath, *maxWorks, *officialBase, hcapi.TokenFromEnv(), *searchLangs)
 	if err != nil {
 		log.Fatal(err)
 	}

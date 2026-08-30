@@ -66,6 +66,7 @@ type sideResult struct {
 type uiItem struct {
 	Title    string  `json:"title"`
 	Subtitle string  `json:"subtitle"`
+	URL      string  `json:"url,omitempty"`
 	WorkID   int64   `json:"workId,omitempty"`
 	BookID   int64   `json:"bookId,omitempty"`
 	AuthorID int64   `json:"authorId,omitempty"`
@@ -215,6 +216,7 @@ func (u *uiServer) hydrate(get getFunc, results []searchResource, res *sideResul
 			}
 			it.Rating = w.AverageRating
 			it.Ratings = w.RatingCount
+			it.URL = w.URL
 			if len(w.Books) > 0 {
 				it.Image = w.Books[0].ImageURL
 			}
@@ -259,6 +261,7 @@ func workItem(w workResource) uiItem {
 	}
 	it := uiItem{
 		Title:   title,
+		URL:     w.URL,
 		WorkID:  w.ForeignID,
 		BookID:  w.BestBookID,
 		Rating:  w.AverageRating,
