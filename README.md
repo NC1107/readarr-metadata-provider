@@ -60,7 +60,7 @@ You type a query and it runs against this server and the public rreading-glasses
 `cmd/parity` does the same from the command line: search ranking agreement over a set of queries, or `-deep` for field-by-field comparison of known works.
 Both are deliberately slow toward the public instance, it's community-funded, don't hammer it.
 
-Search ranking sits at about 88% top-1 agreement with hardcover's own search, and most of the remaining disagreements are cases where I think our answer is better, like their popularity-first sort returning lord of the flies when you search stephen king because he wrote an introduction for it once.
+Search ranking sits at about 92% top-1 agreement with hardcover's own search, and most of the remaining disagreements are cases where I think our answer is better, like their popularity-first sort returning lord of the flies when you search stephen king because he wrote an introduction for it once.
 
 ## How it works
 
