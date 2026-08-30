@@ -16,6 +16,10 @@ type reqRecord struct {
 	Path   string `json:"path"`
 	Status int    `json:"status"`
 	Ms     int64  `json:"ms"`
+	// Count collapses an unbroken run of the same request. Readarr polls a
+	// few routes on a timer, which would otherwise evict every interesting
+	// entry from the ring before anyone looked at it.
+	Count int `json:"count"`
 }
 
 // metrics tracks API traffic: lifetime counters plus a ring of recent
@@ -48,12 +52,23 @@ func (m *metrics) record(method, path string, status int, ms int64) {
 		m.errors++
 	}
 	m.byRoute[route]++
+
+	now := time.Now().Format("15:04:05")
+	if n := len(m.recent); n > 0 {
+		if last := &m.recent[n-1]; last.Method == method && last.Path == path && last.Status == status {
+			last.Count++
+			last.Time = now
+			last.Ms = ms
+			return
+		}
+	}
 	m.recent = append(m.recent, reqRecord{
-		Time:   time.Now().Format("15:04:05"),
+		Time:   now,
 		Method: method,
 		Path:   path,
 		Status: status,
 		Ms:     ms,
+		Count:  1,
 	})
 	if len(m.recent) > historySize {
 		m.recent = m.recent[len(m.recent)-historySize:]

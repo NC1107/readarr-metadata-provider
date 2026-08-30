@@ -48,6 +48,7 @@
   .hrow .st.ok { color: var(--good); } .hrow .st.redir { color: var(--accent); }
   .hrow .st.err { color: var(--bad); }
   .hrow .ms { color: var(--dim); flex: none; }
+  .hrow .rep { color: var(--accent); flex: none; }
   .hempty { padding: 18px 14px; color: var(--dim); font-size: 13px; }
 
   h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
@@ -255,8 +256,9 @@ const stat = (k, v) => `<div class="stat"><span class="k">${esc(k)}</span><span>
 
 function hrow(r) {
   const cls = r.status >= 400 ? 'err' : r.status >= 300 ? 'redir' : 'ok';
+  const rep = r.count > 1 ? `<span class="rep">x${r.count}</span>` : '';
   return `<div class="hrow"><span class="t">${esc(r.time)}</span>
-    <span class="p" title="${esc(r.method + ' ' + r.path)}">${esc(r.path)}</span>
+    <span class="p" title="${esc(r.method + ' ' + r.path)}">${esc(r.path)}</span>${rep}
     <span class="st ${cls}">${r.status}</span><span class="ms">${r.ms}ms</span></div>`;
 }
 
