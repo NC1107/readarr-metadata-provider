@@ -5,14 +5,12 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/NC1107/readarr-metadata-provider/internal/hcapi"
@@ -26,7 +24,7 @@ func main() {
 	reserve := flag.Int64("reserve", 100, "daily API requests to leave unused")
 	flag.Parse()
 
-	token := hardcoverToken()
+	token := hcapi.TokenFromEnv()
 	if token == "" {
 		log.Fatal("set HARDCOVER_TOKEN (env or .env file)")
 	}
@@ -72,25 +70,4 @@ func main() {
 			log.Fatalf("%s %s: %v", name, *mode, err)
 		}
 	}
-}
-
-// hardcoverToken reads HARDCOVER_TOKEN from the environment, falling back to
-// a .env file in the working directory.
-func hardcoverToken() string {
-	if t := os.Getenv("HARDCOVER_TOKEN"); t != "" {
-		return t
-	}
-	f, err := os.Open(".env")
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if v, ok := strings.CutPrefix(line, "HARDCOVER_TOKEN="); ok {
-			return strings.Trim(v, `"'`)
-		}
-	}
-	return ""
 }

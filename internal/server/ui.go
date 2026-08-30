@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -8,8 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/NC1107/readarr-metadata-provider/internal/hcapi"
+	"github.com/NC1107/readarr-metadata-provider/internal/seeder"
 )
 
 //go:embed ui.html
@@ -21,7 +26,7 @@ var uiPage []byte
 const defaultOfficialBase = "https://hardcover.bookinfo.pro"
 
 func (s *Server) mountUI(mux *http.ServeMux, api http.Handler) {
-	ui := &uiServer{server: s, api: api, officialBase: s.officialBase}
+	ui := &uiServer{server: s, api: api, officialBase: s.officialBase, hc: s.hc}
 	mux.HandleFunc("GET /ui", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(uiPage)
@@ -33,6 +38,7 @@ type uiServer struct {
 	server       *Server
 	api          http.Handler
 	officialBase string
+	hc           *hcapi.Client
 }
 
 // sideResult is one half of a comparison: what one server returned and what
@@ -60,11 +66,12 @@ type uiItem struct {
 }
 
 type uiResponse struct {
-	Mode     string     `json:"mode"`
-	Query    string     `json:"query"`
-	Local    sideResult `json:"local"`
-	Official sideResult `json:"official"`
-	Verdict  string     `json:"verdict"`
+	Mode      string     `json:"mode"`
+	Query     string     `json:"query"`
+	Local     sideResult `json:"local"`
+	Official  sideResult `json:"official"`
+	Hardcover sideResult `json:"hardcover"`
+	Verdict   string     `json:"verdict"`
 }
 
 func (u *uiServer) handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -81,15 +88,21 @@ func (u *uiServer) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := uiResponse{Mode: mode, Query: query}
-	done := make(chan struct{})
+	official := make(chan struct{})
+	hardcover := make(chan struct{})
 	go func() {
-		resp.Official = u.fetch("official", u.officialGET, mode, path)
-		close(done)
+		resp.Official = u.fetch("readarr endpoint", u.officialGET, mode, path)
+		close(official)
 	}()
-	resp.Local = u.fetch("this server", u.localGET, mode, path)
-	<-done
+	go func() {
+		resp.Hardcover = u.fetchHardcover(r.Context(), mode, query)
+		close(hardcover)
+	}()
+	resp.Local = u.fetch("local server", u.localGET, mode, path)
+	<-official
+	<-hardcover
 
-	resp.Verdict = verdict(resp.Local, resp.Official)
+	resp.Verdict = verdict(resp.Local, resp.Official, resp.Hardcover)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -283,24 +296,125 @@ func (u *uiServer) officialGET(path string) ([]byte, int, error) {
 	return body, resp.StatusCode, err
 }
 
-func verdict(local, official sideResult) string {
-	switch {
-	case local.Error != "" && official.Error != "":
-		return "both sides failed"
-	case local.Error != "":
-		return "this server failed where the official service answered"
-	case official.Error != "":
-		return "official service unavailable; showing this server only"
+// fetchHardcover builds the third column straight from Hardcover's API:
+// their native search ranking, or the live book rows for an id, mapped
+// through the same resource assembly the local column uses.
+func (u *uiServer) fetchHardcover(ctx context.Context, mode, query string) (res sideResult) {
+	res = sideResult{Label: "hardcover", FormatIssues: []string{}, Items: []uiItem{}}
+	if u.hc == nil {
+		res.Error = "no HARDCOVER_TOKEN configured"
+		return res
 	}
-	agree := "top results differ"
-	if len(local.Items) > 0 && len(official.Items) > 0 {
-		if local.Items[0].WorkID == official.Items[0].WorkID {
-			agree = "top result agrees"
+	start := time.Now()
+	defer func() { res.Took = time.Since(start).Milliseconds() }()
+
+	var books []rawBook
+	var editionID int64
+	var err error
+	switch mode {
+	case "search", "":
+		books, err = u.hcSearchBooks(ctx, query)
+	case "work":
+		books, err = u.hcBooks(ctx, fmt.Sprintf(`{id: {_eq: %s}}`, query), 1, "")
+	case "book":
+		editionID, _ = strconv.ParseInt(query, 10, 64)
+		books, err = u.hcBooks(ctx, fmt.Sprintf(`{editions: {id: {_eq: %s}}}`, query), 1, "")
+	case "author":
+		books, err = u.hcBooks(ctx, fmt.Sprintf(`{contributions: {author_id: {_eq: %s}}}`, query), 10,
+			`order_by: {users_count: desc_nulls_last},`)
+	}
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+
+	seriesCache := map[int64]*rawSeries{}
+	for _, b := range books {
+		w, err := u.server.app.workResource(&b, editionID, seriesCache)
+		if err != nil {
+			continue
 		}
-	} else if len(local.Items) == len(official.Items) {
-		agree = "both empty"
+		res.Items = append(res.Items, workItem(*w))
 	}
-	return fmt.Sprintf("%s · %dms vs %dms", agree, local.Took, official.Took)
+	res.Count = len(res.Items)
+	return res
+}
+
+func (u *uiServer) hcBooks(ctx context.Context, where string, limit int, extra string) ([]rawBook, error) {
+	q := fmt.Sprintf(`{ books(where: %s, %s limit: %d) { %s } }`,
+		where, extra, limit, seeder.Entities["books"].Fields)
+	data, err := u.hc.Query(ctx, q, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Books []rawBook `json:"books"`
+	}
+	return out.Books, json.Unmarshal(data, &out)
+}
+
+// hcSearchBooks runs Hardcover's own search with the exact configuration
+// rreading-glasses uses, then fetches the matched books in rank order.
+func (u *uiServer) hcSearchBooks(ctx context.Context, query string) ([]rawBook, error) {
+	data, err := u.hc.Query(ctx, `query ($q: String!) {
+		search(query: $q, per_page: 10, query_type: "book",
+			fields: "title,isbns,series_names,author_names,alternative_titles",
+			weights: "5,1,3,5,1",
+			sort: "ratings_count:desc,_text_match:desc") { ids }
+	}`, map[string]any{"q": query})
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Search struct {
+			IDs []json.Number `json:"ids"`
+		} `json:"search"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	if len(out.Search.IDs) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, len(out.Search.IDs))
+	for i, id := range out.Search.IDs {
+		ids[i] = id.String()
+	}
+	books, err := u.hcBooks(ctx, fmt.Sprintf(`{id: {_in: [%s]}}`, strings.Join(ids, ",")), len(ids), "")
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]rawBook{}
+	for _, b := range books {
+		byID[fmt.Sprint(b.ID)] = b
+	}
+	ordered := make([]rawBook, 0, len(books))
+	for _, id := range ids {
+		if b, ok := byID[id]; ok {
+			ordered = append(ordered, b)
+		}
+	}
+	return ordered, nil
+}
+
+func verdict(local, official, hardcover sideResult) string {
+	if local.Error != "" {
+		return "local server failed"
+	}
+	part := func(s sideResult) string {
+		switch {
+		case s.Error != "":
+			return "unavailable"
+		case len(s.Items) == 0 || len(local.Items) == 0:
+			return "no overlap"
+		case local.Items[0].WorkID == s.Items[0].WorkID:
+			return "top result agrees"
+		default:
+			return "top result differs"
+		}
+	}
+	return fmt.Sprintf("readarr endpoint: %s · hardcover: %s · %dms vs %dms vs %dms",
+		part(official), part(hardcover), local.Took, official.Took, hardcover.Took)
 }
 
 // checkSearchFormat verifies the exact lowercase keys Readarr's search

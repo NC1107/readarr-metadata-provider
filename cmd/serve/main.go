@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/NC1107/readarr-metadata-provider/internal/hcapi"
 	"github.com/NC1107/readarr-metadata-provider/internal/server"
 )
 
@@ -17,7 +18,7 @@ func main() {
 	officialBase := flag.String("official", "", "reference metadata service for the /ui comparison console")
 	flag.Parse()
 
-	s, err := server.New(*dbPath, *maxWorks, *officialBase)
+	s, err := server.New(*dbPath, *maxWorks, *officialBase, hcapi.TokenFromEnv())
 	if err != nil {
 		log.Fatal(err)
 	}

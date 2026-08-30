@@ -12,15 +12,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/NC1107/readarr-metadata-provider/internal/hcapi"
 )
 
 type Server struct {
 	app          *app
 	maxWorks     int
 	officialBase string
+	hc           *hcapi.Client
 }
 
-func New(dbPath string, maxWorks int, officialBase string) (*Server, error) {
+// New opens the dataset. hcToken is optional; with it, the /ui console adds
+// a live Hardcover comparison column.
+func New(dbPath string, maxWorks int, officialBase, hcToken string) (*Server, error) {
 	st, err := openStore(dbPath)
 	if err != nil {
 		return nil, err
@@ -28,7 +33,11 @@ func New(dbPath string, maxWorks int, officialBase string) (*Server, error) {
 	if officialBase == "" {
 		officialBase = defaultOfficialBase
 	}
-	return &Server{app: &app{store: st}, maxWorks: maxWorks, officialBase: officialBase}, nil
+	s := &Server{app: &app{store: st}, maxWorks: maxWorks, officialBase: officialBase}
+	if hcToken != "" {
+		s.hc = hcapi.NewClient(hcToken)
+	}
+	return s, nil
 }
 
 func (s *Server) Handler() http.Handler {

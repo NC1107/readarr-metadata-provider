@@ -3,6 +3,7 @@
 package hcapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -179,4 +182,25 @@ func (c *Client) recordLimits(h http.Header) {
 			c.dailyReset = time.Unix(sec, 0)
 		}
 	}
+}
+
+// TokenFromEnv reads HARDCOVER_TOKEN from the environment, falling back to
+// a .env file in the working directory. Empty when neither is set.
+func TokenFromEnv() string {
+	if t := os.Getenv("HARDCOVER_TOKEN"); t != "" {
+		return t
+	}
+	f, err := os.Open(".env")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if v, ok := strings.CutPrefix(line, "HARDCOVER_TOKEN="); ok {
+			return strings.Trim(v, `"'`)
+		}
+	}
+	return ""
 }

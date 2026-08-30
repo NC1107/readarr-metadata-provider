@@ -27,8 +27,8 @@
     font-weight: 600; cursor: pointer; }
   .verdict { margin: 14px 0 18px; color: var(--dim); font-size: 13px; min-height: 20px; }
   .verdict b { color: var(--text); }
-  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } }
   .col { background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; overflow: hidden; }
   .colhead { display: flex; justify-content: space-between; align-items: baseline;
@@ -60,8 +60,8 @@
 <body>
 <div class="wrap">
   <h1>readarr-metadata-provider <span>comparison console</span></h1>
-  <div class="sub">Every query runs against this server and the official service side by side.
-    Rows are matched by work id; a red edge marks a result the other side ranked differently or lacks.</div>
+  <div class="sub">Each query runs against the local server, the readarr endpoint (rreading-glasses), and hardcover's own search.
+    A red edge marks a result the local server ranks differently or lacks.</div>
   <form id="f">
     <input type="text" id="q" placeholder="search books or authors, or paste an id…" autofocus>
     <select id="mode">
@@ -76,9 +76,10 @@
   <div class="cols">
     <div class="col" id="local"></div>
     <div class="col" id="official"></div>
+    <div class="col" id="hardcover"></div>
   </div>
-  <div class="foot">Book data by <a href="https://hardcover.app">Hardcover</a>.
-    The official column queries the public rreading-glasses instance; be considerate, it is community-funded.</div>
+  <div class="foot">Book data by <a href="https://hardcover.app">hardcover</a>.
+    The readarr endpoint column queries the public rreading-glasses instance; be considerate, it's community-funded.</div>
 </div>
 <script>
 const $ = id => document.getElementById(id);
@@ -87,8 +88,8 @@ $('f').addEventListener('submit', async e => {
   e.preventDefault();
   const q = $('q').value.trim();
   if (!q) return;
-  $('verdict').textContent = 'querying both sides…';
-  $('local').innerHTML = $('official').innerHTML = '';
+  $('verdict').textContent = 'querying all three…';
+  $('local').innerHTML = $('official').innerHTML = $('hardcover').innerHTML = '';
   try {
     const r = await fetch(`/ui/query?mode=${$('mode').value}&q=${encodeURIComponent(q)}`);
     if (!r.ok) throw new Error(await r.text());
@@ -100,10 +101,11 @@ $('f').addEventListener('submit', async e => {
 
 function render(d) {
   $('verdict').innerHTML = `<b>${esc(d.verdict)}</b>`;
-  const officialIDs = new Set((d.official.items || []).map(i => i.workId));
   const localIDs = new Set((d.local.items || []).map(i => i.workId));
+  const officialIDs = new Set((d.official.items || []).map(i => i.workId));
   $('local').innerHTML = side(d.local, officialIDs, d.official.error);
   $('official').innerHTML = side(d.official, localIDs, d.local.error);
+  $('hardcover').innerHTML = side(d.hardcover, localIDs, d.local.error);
 }
 
 function side(s, otherIDs, otherFailed) {
