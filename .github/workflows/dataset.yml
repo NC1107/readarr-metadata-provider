@@ -1,0 +1,79 @@
+# Refreshes the dataset and publishes a new snapshot release.
+#
+# The full Hardcover catalog was seeded once (~11,600 API queries); that raw
+# layer is preserved as the assets of the rolling "raw-data" release. This
+# job downloads it, pulls only the rows changed since the last sync (delta
+# mode, usually a few hundred queries), rebuilds the SQLite dataset, and
+# publishes it - so the full seed never has to run again, on CI or anywhere.
+#
+# Requires the HARDCOVER_TOKEN repository secret. Does nothing without it.
+name: dataset
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1,4" # twice a week, Monday and Thursday
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secret
+        run: |
+          if [ -z "${{ secrets.HARDCOVER_TOKEN }}" ]; then
+            echo "HARDCOVER_TOKEN secret is not set; skipping." >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download raw layer
+        run: |
+          mkdir -p data
+          gh release download raw-data --dir /tmp/raw
+          cat /tmp/raw/raw.tar.zst.part* 2>/dev/null | zstd -d | tar -x -C data \
+            || zstd -d -c /tmp/raw/raw.tar.zst | tar -x -C data
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Delta sync
+        run: |
+          go run ./cmd/seed -mode delta -entity books
+          go run ./cmd/seed -mode delta -entity book_links
+        env:
+          HARDCOVER_TOKEN: ${{ secrets.HARDCOVER_TOKEN }}
+
+      - name: Build dataset
+        run: go run ./cmd/build
+
+      - name: Package
+        run: scripts/package-dataset.sh data/dataset/metadata.db dist
+
+      - name: Publish dataset snapshot
+        run: |
+          TAG="dataset-$(date -u +%Y%m%d)"
+          gh release create "$TAG" dist/* \
+            --title "Dataset $(date -u +%Y-%m-%d)" \
+            --notes "Book metadata snapshot built from Hardcover data. See manifest.txt for checksums and reassembly."
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Update raw layer
+        run: |
+          tar -c -C data raw state | zstd -T0 -8 > raw.tar.zst
+          if [ "$(stat -c %s raw.tar.zst)" -gt $((1900*1024*1024)) ]; then
+            split -b 1900M -d raw.tar.zst raw.tar.zst.part
+            gh release upload raw-data raw.tar.zst.part* --clobber
+          else
+            gh release upload raw-data raw.tar.zst --clobber
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
