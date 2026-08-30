@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/NC1107/readarr-metadata-provider/internal/textnorm"
@@ -255,7 +257,68 @@ func (s *store) searchWorks(query string, limit int) ([]int64, error) {
 			return ids, nil
 		}
 	}
+	// "stormlight archive 4" means book 4 of that series. The work carrying
+	// the position often never contains the number as text, so term matching
+	// alone can't find it; resolve through the series tables instead and put
+	// those hits first.
+	if seriesIDs := s.seriesPositionWorks(query); len(seriesIDs) > 0 {
+		seen := map[int64]bool{}
+		merged := make([]int64, 0, len(seriesIDs)+len(ftsIDs))
+		for _, id := range append(seriesIDs, ftsIDs...) {
+			if !seen[id] {
+				seen[id] = true
+				merged = append(merged, id)
+			}
+		}
+		return merged, nil
+	}
 	return ftsIDs, nil
+}
+
+var seriesNumberPattern = regexp.MustCompile(`(?i)^(.*?)[\s,:]+(?:book|bk\.?|vol\.?|volume|no\.?|#)?\s*(\d{1,3}(?:\.\d)?)$`)
+
+// seriesPositionWorks resolves "<series name> <n>" queries: if the leading
+// text matches a series and that series has works at position n, those works
+// are returned most popular first.
+func (s *store) seriesPositionWorks(query string) []int64 {
+	m := seriesNumberPattern.FindStringSubmatch(strings.TrimSpace(query))
+	if m == nil || strings.TrimSpace(m[1]) == "" {
+		return nil
+	}
+	name := strings.TrimSpace(m[1])
+	position, err := strconv.ParseFloat(m[2], 64)
+	if err != nil {
+		return nil
+	}
+	var seriesID int64
+	err = s.db.QueryRow(`
+		SELECT s.id FROM series s
+		WHERE s.name LIKE '%' || ?1 || '%'
+		ORDER BY (SELECT COALESCE(SUM(w.users_count), 0)
+			FROM work_series ws JOIN works w ON w.id = ws.work_id
+			WHERE ws.series_id = s.id) DESC
+		LIMIT 1`, name).Scan(&seriesID)
+	if err != nil {
+		return nil
+	}
+	rows, err := s.db.Query(`
+		SELECT ws.work_id FROM work_series ws
+		JOIN works w ON w.id = ws.work_id
+		WHERE ws.series_id = ? AND ws.position = ?
+		ORDER BY w.users_count DESC
+		LIMIT 3`, seriesID, position)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func firstID(ids []int64) int64 {

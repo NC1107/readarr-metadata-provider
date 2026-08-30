@@ -108,6 +108,13 @@ func (s *Server) Handler() http.Handler {
 	// The console's own probes use the raw api handler, so only real client
 	// traffic is instrumented into the history and counters.
 	mux.Handle("/", s.instrument(api))
+	// Browsers visiting the console request this; keep it out of the API
+	// history and error counters.
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><text y="13" font-size="13">&#128214;</text></svg>`))
+	})
 	s.mountUI(mux, api)
 	return mux
 }

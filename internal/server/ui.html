@@ -13,24 +13,25 @@
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 14px/1.5 system-ui, sans-serif; }
   .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr) 330px;
-    gap: 18px; max-width: 1780px; margin: 0 auto; padding: 24px 16px 64px;
-    align-items: start; }
+    gap: 12px; padding: 12px; align-items: start; }
+  main { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px; min-width: 0; }
   @media (max-width: 1250px) { .layout { grid-template-columns: 1fr; } }
 
   .rail { background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; position: sticky; top: 16px;
-    max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
-  .railhead { padding: 10px 14px; border-bottom: 1px solid var(--line);
+    border-radius: 10px; position: sticky; top: 12px;
+    max-height: calc(100vh - 24px); display: flex; flex-direction: column; }
+  .railhead { padding: 8px 12px; border-bottom: 1px solid var(--line);
     font-weight: 600; display: flex; justify-content: space-between;
     align-items: baseline; }
   .railhead span { color: var(--dim); font-weight: 400; font-size: 12px; }
   .railbody { overflow-y: auto; }
 
-  .stat { display: flex; justify-content: space-between; padding: 7px 14px;
+  .stat { display: flex; justify-content: space-between; padding: 5px 12px;
     border-bottom: 1px solid var(--line); font-size: 13px; }
   .stat:last-child { border-bottom: 0; }
   .stat .k { color: var(--dim); }
-  .stathead { padding: 8px 14px 2px; color: var(--dim); font-size: 11px;
+  .stathead { padding: 6px 12px 2px; color: var(--dim); font-size: 11px;
     text-transform: uppercase; letter-spacing: .06em; }
 
   .hrow { display: flex; gap: 8px; padding: 6px 12px; font-size: 12px;
@@ -57,11 +58,10 @@
     color: var(--text); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
   button { background: var(--accent); border-color: var(--accent); color: #10131c;
     font-weight: 600; cursor: pointer; }
-  .verdict { margin: 14px 0 18px; color: var(--dim); font-size: 13px; min-height: 20px; }
-  .verdict b { color: var(--text); }
+  .qerr { margin: 12px 0 0; color: var(--bad); font-size: 13px; }
   .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
   @media (max-width: 1600px) { .cols { grid-template-columns: 1fr; } }
-  .col { background: var(--panel); border: 1px solid var(--line);
+  .col { background: var(--bg); border: 1px solid var(--line);
     border-radius: 10px; overflow: hidden; }
   .colhead { display: flex; justify-content: space-between; align-items: baseline;
     padding: 10px 14px; border-bottom: 1px solid var(--line); }
@@ -109,12 +109,12 @@
       </select>
       <button>compare</button>
     </form>
-    <div class="verdict" id="verdict"></div>
-    <div class="cols">
+    <div class="cols" id="cols" hidden>
       <div class="col" id="local"></div>
       <div class="col" id="official"></div>
       <div class="col" id="hardcover"></div>
     </div>
+    <div class="qerr" id="qerr" hidden></div>
     <div class="foot">Book data by <a href="https://hardcover.app">hardcover</a>.
       The readarr endpoint column queries the public rreading-glasses instance; be considerate, it's community-funded.</div>
   </main>
@@ -132,19 +132,22 @@ $('f').addEventListener('submit', async e => {
   e.preventDefault();
   const q = $('q').value.trim();
   if (!q) return;
-  $('verdict').textContent = 'querying all three…';
-  $('local').innerHTML = $('official').innerHTML = $('hardcover').innerHTML = '';
+  $('qerr').hidden = true;
+  $('cols').hidden = false;
+  const loading = `<div class="colhead"><span class="name">…</span></div><div class="empty">querying</div>`;
+  $('local').innerHTML = $('official').innerHTML = $('hardcover').innerHTML = loading;
   try {
     const r = await fetch(`/ui/query?mode=${$('mode').value}&q=${encodeURIComponent(q)}`);
     if (!r.ok) throw new Error(await r.text());
     render(await r.json());
   } catch (err) {
-    $('verdict').innerHTML = `<b style="color:var(--bad)">${esc(err.message)}</b>`;
+    $('cols').hidden = true;
+    $('qerr').hidden = false;
+    $('qerr').textContent = err.message;
   }
 });
 
 function render(d) {
-  $('verdict').innerHTML = `<b>${esc(d.verdict)}</b>`;
   const localIDs = new Set((d.local.items || []).map(i => i.workId));
   const officialIDs = new Set((d.official.items || []).map(i => i.workId));
   $('local').innerHTML = side(d.local, officialIDs, d.official.error);

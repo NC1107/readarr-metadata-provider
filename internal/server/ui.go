@@ -80,7 +80,6 @@ type uiResponse struct {
 	Local     sideResult `json:"local"`
 	Official  sideResult `json:"official"`
 	Hardcover sideResult `json:"hardcover"`
-	Verdict   string     `json:"verdict"`
 }
 
 func (u *uiServer) handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +110,6 @@ func (u *uiServer) handleQuery(w http.ResponseWriter, r *http.Request) {
 	<-official
 	<-hardcover
 
-	resp.Verdict = verdict(resp.Local, resp.Official, resp.Hardcover)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -328,19 +326,21 @@ func (u *uiServer) fetchHardcover(ctx context.Context, mode, query string) (res 
 
 	var books []rawBook
 	var editionID int64
+	var n int
 	var err error
 	switch mode {
 	case "search", "":
-		books, err = u.hcSearchBooks(ctx, query)
+		books, n, err = u.hcSearchBooks(ctx, query)
 	case "work":
-		books, err = u.hcBooks(ctx, fmt.Sprintf(`{id: {_eq: %s}}`, query), 1, "")
+		books, n, err = u.hcBooks(ctx, fmt.Sprintf(`{id: {_eq: %s}}`, query), 1, "")
 	case "book":
 		editionID, _ = strconv.ParseInt(query, 10, 64)
-		books, err = u.hcBooks(ctx, fmt.Sprintf(`{editions: {id: {_eq: %s}}}`, query), 1, "")
+		books, n, err = u.hcBooks(ctx, fmt.Sprintf(`{editions: {id: {_eq: %s}}}`, query), 1, "")
 	case "author":
-		books, err = u.hcBooks(ctx, fmt.Sprintf(`{contributions: {author_id: {_eq: %s}}}`, query), 10,
+		books, n, err = u.hcBooks(ctx, fmt.Sprintf(`{contributions: {author_id: {_eq: %s}}}`, query), 10,
 			`order_by: {users_count: desc_nulls_last},`)
 	}
+	res.Bytes = n
 	if err != nil {
 		res.Error = err.Error()
 		return res
@@ -358,22 +358,22 @@ func (u *uiServer) fetchHardcover(ctx context.Context, mode, query string) (res 
 	return res
 }
 
-func (u *uiServer) hcBooks(ctx context.Context, where string, limit int, extra string) ([]rawBook, error) {
+func (u *uiServer) hcBooks(ctx context.Context, where string, limit int, extra string) ([]rawBook, int, error) {
 	q := fmt.Sprintf(`{ books(where: %s, %s limit: %d) { %s } }`,
 		where, extra, limit, seeder.Entities["books"].Fields)
 	data, err := u.hc.Query(ctx, q, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var out struct {
 		Books []rawBook `json:"books"`
 	}
-	return out.Books, json.Unmarshal(data, &out)
+	return out.Books, len(data), json.Unmarshal(data, &out)
 }
 
 // hcSearchBooks runs Hardcover's own search with the exact configuration
 // rreading-glasses uses, then fetches the matched books in rank order.
-func (u *uiServer) hcSearchBooks(ctx context.Context, query string) ([]rawBook, error) {
+func (u *uiServer) hcSearchBooks(ctx context.Context, query string) ([]rawBook, int, error) {
 	data, err := u.hc.Query(ctx, `query ($q: String!) {
 		search(query: $q, per_page: 10, query_type: "book",
 			fields: "title,isbns,series_names,author_names,alternative_titles",
@@ -381,7 +381,7 @@ func (u *uiServer) hcSearchBooks(ctx context.Context, query string) ([]rawBook, 
 			sort: "ratings_count:desc,_text_match:desc") { ids }
 	}`, map[string]any{"q": query})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var out struct {
 		Search struct {
@@ -389,18 +389,18 @@ func (u *uiServer) hcSearchBooks(ctx context.Context, query string) ([]rawBook, 
 		} `json:"search"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, err
+		return nil, len(data), err
 	}
 	if len(out.Search.IDs) == 0 {
-		return nil, nil
+		return nil, len(data), nil
 	}
 	ids := make([]string, len(out.Search.IDs))
 	for i, id := range out.Search.IDs {
 		ids[i] = id.String()
 	}
-	books, err := u.hcBooks(ctx, fmt.Sprintf(`{id: {_in: [%s]}}`, strings.Join(ids, ",")), len(ids), "")
+	books, n, err := u.hcBooks(ctx, fmt.Sprintf(`{id: {_in: [%s]}}`, strings.Join(ids, ",")), len(ids), "")
 	if err != nil {
-		return nil, err
+		return nil, len(data) + n, err
 	}
 	byID := map[string]rawBook{}
 	for _, b := range books {
@@ -412,27 +412,7 @@ func (u *uiServer) hcSearchBooks(ctx context.Context, query string) ([]rawBook, 
 			ordered = append(ordered, b)
 		}
 	}
-	return ordered, nil
-}
-
-func verdict(local, official, hardcover sideResult) string {
-	if local.Error != "" {
-		return "local server failed"
-	}
-	part := func(s sideResult) string {
-		switch {
-		case s.Error != "":
-			return "unavailable"
-		case len(s.Items) == 0 || len(local.Items) == 0:
-			return "no overlap"
-		case local.Items[0].WorkID == s.Items[0].WorkID:
-			return "top result agrees"
-		default:
-			return "top result differs"
-		}
-	}
-	return fmt.Sprintf("readarr endpoint: %s · hardcover: %s · %dms vs %dms vs %dms",
-		part(official), part(hardcover), local.Took, official.Took, hardcover.Took)
+	return ordered, len(data) + n, nil
 }
 
 // checkSearchFormat verifies the exact lowercase keys Readarr's search
