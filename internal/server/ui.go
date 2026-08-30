@@ -194,7 +194,12 @@ func (u *uiServer) hydrate(get getFunc, results []searchResource, res *sideResul
 	for _, r := range results[:limit] {
 		it := uiItem{WorkID: r.WorkID, BookID: r.BookID, AuthorID: r.Author.ID}
 		if w, ok := byBook[r.BookID]; ok {
+			// Bulk promotes Title to FullTitle for the client; the console
+			// shows the short title so columns align visually.
 			it.Title = w.Title
+			if w.ShortTitle != "" {
+				it.Title = w.ShortTitle
+			}
 			if len(w.Authors) > 0 {
 				it.Subtitle = w.Authors[0].Name
 			}
@@ -241,8 +246,12 @@ func resourceItems(mode string, body []byte) ([]uiItem, int) {
 }
 
 func workItem(w workResource) uiItem {
+	title := w.Title
+	if w.ShortTitle != "" {
+		title = w.ShortTitle
+	}
 	it := uiItem{
-		Title:   w.Title,
+		Title:   title,
 		WorkID:  w.ForeignID,
 		BookID:  w.BestBookID,
 		Rating:  w.AverageRating,
