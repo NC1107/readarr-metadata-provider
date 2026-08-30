@@ -25,6 +25,7 @@ type Server struct {
 	metrics      *metrics
 	dbPath       string
 	searchLangs  map[string]bool
+	minRatings   int64
 
 	statsMu sync.Mutex
 	stats   datasetStats
@@ -99,34 +100,51 @@ func (s *Server) datasetStats() datasetStats {
 	return s.stats
 }
 
-// New opens the dataset. hcToken is optional; with it, the /ui console adds
-// a live Hardcover comparison column. searchLangs is a comma-separated list
-// of edition language codes search results may have (empty disables the
-// filter); works with no language recorded always pass, and a query typed
-// in non-Latin script skips the filter so native-language searches work.
-func New(dbPath string, maxWorks int, officialBase, hcToken, searchLangs string) (*Server, error) {
-	st, err := openStore(dbPath)
+// Config holds the server's tunables.
+type Config struct {
+	DBPath   string
+	MaxWorks int
+	// OfficialBase is the reference service for the /ui console; empty
+	// selects the public rreading-glasses Hardcover instance.
+	OfficialBase string
+	// HCToken is optional; with it, the /ui console adds a live Hardcover
+	// comparison column.
+	HCToken string
+	// SearchLangs is a comma-separated list of edition language codes
+	// search results may have (empty disables the filter); works with no
+	// language recorded pass a title-script check instead, and a query
+	// typed in non-Latin script skips the filter entirely.
+	SearchLangs string
+	// MinRatings drops search results with fewer ratings than this, unless
+	// that would leave no results at all. Junk imports and box-set stubs
+	// rarely clear even a low bar.
+	MinRatings int64
+}
+
+func New(cfg Config) (*Server, error) {
+	st, err := openStore(cfg.DBPath)
 	if err != nil {
 		return nil, err
 	}
-	if officialBase == "" {
-		officialBase = defaultOfficialBase
+	if cfg.OfficialBase == "" {
+		cfg.OfficialBase = defaultOfficialBase
 	}
 	s := &Server{
 		app:          &app{store: st},
-		maxWorks:     maxWorks,
-		officialBase: officialBase,
+		maxWorks:     cfg.MaxWorks,
+		officialBase: cfg.OfficialBase,
 		metrics:      newMetrics(),
-		dbPath:       dbPath,
+		dbPath:       cfg.DBPath,
+		minRatings:   cfg.MinRatings,
 		searchLangs:  map[string]bool{},
 	}
-	for _, l := range strings.Split(searchLangs, ",") {
+	for _, l := range strings.Split(cfg.SearchLangs, ",") {
 		if l = strings.TrimSpace(l); l != "" {
 			s.searchLangs[l] = true
 		}
 	}
-	if hcToken != "" {
-		s.hc = hcapi.NewClient(hcToken)
+	if cfg.HCToken != "" {
+		s.hc = hcapi.NewClient(cfg.HCToken)
 	}
 	go s.loadStats()
 	return s, nil
@@ -228,6 +246,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	results := []searchResource{}
+	var belowCutoff []searchResource
 	for _, workID := range workIDs {
 		b, err := s.app.store.work(workID)
 		if err != nil {
@@ -237,11 +256,24 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		if authorID == 0 || len(b.Editions) == 0 || !s.langAllowed(b, query) {
 			continue
 		}
-		results = append(results, searchResource{
+		r := searchResource{
 			BookID: b.Editions[0].ID,
 			WorkID: b.ID,
 			Author: searchResourceAuthor{ID: authorID},
-		})
+		}
+		if b.RatingsCount < s.minRatings {
+			belowCutoff = append(belowCutoff, r)
+			continue
+		}
+		results = append(results, r)
+	}
+	// A cutoff that filters everything filters nothing: an obscure book
+	// with two ratings must still be findable when it is the only match.
+	if len(results) == 0 {
+		results = belowCutoff
+	}
+	if results == nil {
+		results = []searchResource{}
 	}
 	writeJSON(w, results)
 }

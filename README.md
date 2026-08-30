@@ -16,9 +16,13 @@ Book data comes from [hardcover](https://hardcover.app), who are good people, be
 
 ## Building the dataset
 
+Prebuilt dataset snapshots on github releases are planned, so most people will just download one instead of seeding their own.
+Until then, or if you'd rather build yours from scratch, here's what it costs: a full seed is about 11,600 API queries (two sweeps of the ~2.9M book id space at 500 rows per query).
+Hardcover's free tier allows 5,000 queries a day, so that's three days on a free account, or a single day as a supporter (50,000/day).
+The seeder checkpoints as it goes and stops cleanly when the daily budget runs low, so you just rerun it the next day and it resumes.
+Daily delta syncs after that are a few hundred queries.
+
 You need a hardcover API token (free account, Settings > Hardcover API).
-The seeder pulls the whole catalog through batched id-range queries, checkpoints as it goes, and stops cleanly if it hits the daily API budget, so you can just rerun it the next day and it resumes.
-A full seed is around 12k queries, which fits in a day on a free account with room to spare.
 
 ```sh
 cp .env.example .env   # put your token in it

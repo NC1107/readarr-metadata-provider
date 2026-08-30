@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/NC1107/readarr-metadata-provider/internal/textnorm"
 	_ "modernc.org/sqlite"
@@ -110,6 +112,14 @@ type rawSeries struct {
 type store struct {
 	db          *sql.DB
 	hasNormName bool
+
+	fuzzyOnce  sync.Once
+	fuzzyNames []fuzzyName
+}
+
+type fuzzyName struct {
+	id   int64
+	norm string
 }
 
 func openStore(path string) (*store, error) {
@@ -272,6 +282,12 @@ func (s *store) searchWorks(query string, limit int) ([]int64, error) {
 		}
 		return merged, nil
 	}
+	// Nothing matched at all: assume a misspelled author name.
+	if len(ftsIDs) == 0 {
+		if fuzzyID := s.fuzzyAuthorID(query); fuzzyID != 0 {
+			return s.authorWorkIDs(fuzzyID, limit)
+		}
+	}
 	return ftsIDs, nil
 }
 
@@ -373,6 +389,100 @@ func (s *store) authorAggregates(authorID int64) (count int64, avg float32) {
 		avg = float32(sum / float64(count))
 	}
 	return count, avg
+}
+
+// fuzzyAuthorID finds the author whose name best matches a query nothing
+// else matched, using character-bigram Dice similarity. This is the
+// misspelling fallback ("bradnon sadnerson"); Hardcover's search engine is
+// typo-tolerant and FTS5 is not, so without it we return nothing where
+// upstream answers. The name list loads lazily on the first miss.
+func (s *store) fuzzyAuthorID(query string) int64 {
+	norm := textnorm.Name(query)
+	if len(norm) < 4 {
+		return 0
+	}
+	s.fuzzyOnce.Do(func() {
+		rows, err := s.db.Query(`SELECT id, name FROM authors`)
+		if err != nil {
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var f fuzzyName
+			var name string
+			if rows.Scan(&f.id, &name) == nil {
+				f.norm = textnorm.Name(name)
+				s.fuzzyNames = append(s.fuzzyNames, f)
+			}
+		}
+	})
+
+	qgrams := bigrams(norm)
+	if len(qgrams) == 0 {
+		return 0
+	}
+	type hit struct {
+		id    int64
+		score float64
+	}
+	var best []hit
+	for _, f := range s.fuzzyNames {
+		// Cheap length gate before the bigram comparison.
+		if len(f.norm) < len(norm)-3 || len(f.norm) > len(norm)+3 {
+			continue
+		}
+		score := diceScore(qgrams, f.norm)
+		if score >= 0.6 {
+			best = append(best, hit{f.id, score})
+		}
+	}
+	if len(best) == 0 {
+		return 0
+	}
+	// Among close matches, popularity decides: a typo of a famous name is
+	// far more likely than an exact-ish obscure one.
+	var winner int64
+	var winnerKey float64 = -1
+	for _, h := range best {
+		_, pop := s.authorPopularity(h.id)
+		key := h.score + math.Log1p(float64(pop))/100
+		if key > winnerKey {
+			winnerKey = key
+			winner = h.id
+		}
+	}
+	return winner
+}
+
+func (s *store) authorPopularity(authorID int64) (int64, int64) {
+	var pop int64
+	_ = s.db.QueryRow(`SELECT COALESCE(SUM(w.users_count), 0)
+		FROM work_authors wa JOIN works w ON w.id = wa.work_id
+		WHERE wa.author_id = ?`, authorID).Scan(&pop)
+	return authorID, pop
+}
+
+func bigrams(s string) map[string]bool {
+	out := map[string]bool{}
+	for i := 0; i+2 <= len(s); i++ {
+		out[s[i:i+2]] = true
+	}
+	return out
+}
+
+func diceScore(qgrams map[string]bool, name string) float64 {
+	n := 0
+	total := 0
+	for i := 0; i+2 <= len(name); i++ {
+		total++
+		if qgrams[name[i:i+2]] {
+			n++
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return 2 * float64(n) / float64(total+len(qgrams))
 }
 
 // authorIDByName resolves a query that is an author's name modulo case and

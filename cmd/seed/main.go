@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/NC1107/readarr-metadata-provider/internal/envfile"
 	"github.com/NC1107/readarr-metadata-provider/internal/hcapi"
 	"github.com/NC1107/readarr-metadata-provider/internal/seeder"
 )
@@ -24,7 +25,8 @@ func main() {
 	reserve := flag.Int64("reserve", 100, "daily API requests to leave unused")
 	flag.Parse()
 
-	token := hcapi.TokenFromEnv()
+	envfile.Load(".env")
+	token := os.Getenv("HARDCOVER_TOKEN")
 	if token == "" {
 		log.Fatal("set HARDCOVER_TOKEN (env or .env file)")
 	}
