@@ -10,7 +10,7 @@ This is the offline version of that: the whole dataset (about 2.8 million books,
 It speaks the same API as rreading-glasses' hardcover flavor, same shapes, same redirect flows, same hardcover ids, so bookshelf and readarr treat it as a drop-in.
 Responses are checked field by field against the live service so imports behave the same.
 
-Status: working end to end, dataset published, no docker image pushed yet so compose builds it locally.
+Status: working end to end. Dataset and container image are both published, so compose just pulls.
 Book data comes from [hardcover](https://hardcover.app), who are good people, be considerate with their API.
 
 ## Quick start

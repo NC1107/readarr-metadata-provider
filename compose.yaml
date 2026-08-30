@@ -2,7 +2,8 @@
 # with ./switch.sh --readarr http://readarr:8787 --api-key <key> --to http://metadata:8816/
 services:
   metadata:
-    build: .
+    image: ghcr.io/nc1107/readarr-metadata-provider:latest
+    # Swap for `build: .` to run your own build instead of the published image.
     container_name: readarr-metadata-provider
     restart: unless-stopped
     ports:
