@@ -43,12 +43,25 @@ func (s *Server) langAllowed(b *rawBook, query string) bool {
 			return true
 		}
 	}
-	if len(b.Editions) > 0 && b.Editions[0].Language != nil && b.Editions[0].Language.Code2 != "" {
-		return s.searchLangs[b.Editions[0].Language.Code2]
+	// Any edition in an allowed language keeps the work: a book whose
+	// most-shelved edition happens to be a translation is still the book
+	// being searched for.
+	anyKnown := false
+	for _, e := range b.Editions {
+		if e.Language == nil || e.Language.Code2 == "" {
+			continue
+		}
+		anyKnown = true
+		if s.searchLangs[e.Language.Code2] {
+			return true
+		}
 	}
-	// No language recorded (common for Hardcover's translated imports):
-	// fall back to the title's script. A mostly non-Latin title is not what
-	// a Latin-script query is after.
+	if anyKnown {
+		return false
+	}
+	// No language recorded anywhere (common for Hardcover's translated
+	// imports): fall back to the title's script. A mostly non-Latin title is
+	// not what a Latin-script query is after.
 	var latin, letters int
 	for _, r := range b.Title {
 		if unicode.IsLetter(r) {
