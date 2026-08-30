@@ -26,6 +26,7 @@ CREATE TABLE works (
 	id INTEGER PRIMARY KEY,
 	title TEXT NOT NULL,
 	users_count INTEGER NOT NULL DEFAULT 0,
+	ratings_count INTEGER NOT NULL DEFAULT 0,
 	updated_at TEXT,
 	json TEXT NOT NULL
 );
@@ -148,6 +149,7 @@ type workRow struct {
 	ID            int64  `json:"id"`
 	Title         string `json:"title"`
 	UsersCount    int64  `json:"users_count"`
+	RatingsCount  int64  `json:"ratings_count"`
 	UpdatedAt     string `json:"updated_at"`
 	Contributions []struct {
 		AuthorID     *int64  `json:"author_id"`
@@ -173,8 +175,8 @@ func (b *Builder) loadWorks(db *sql.DB) error {
 	defer tx.Rollback()
 
 	// Later files (deltas) overwrite earlier rows for the same id.
-	insWork, _ := tx.Prepare(`INSERT INTO works (id, title, users_count, updated_at, json) VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET title=excluded.title, users_count=excluded.users_count, updated_at=excluded.updated_at, json=excluded.json`)
+	insWork, _ := tx.Prepare(`INSERT INTO works (id, title, users_count, ratings_count, updated_at, json) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET title=excluded.title, users_count=excluded.users_count, ratings_count=excluded.ratings_count, updated_at=excluded.updated_at, json=excluded.json`)
 	insWA, _ := tx.Prepare(`INSERT OR REPLACE INTO work_authors (work_id, author_id, role) VALUES (?, ?, ?)`)
 	insWS, _ := tx.Prepare(`INSERT OR REPLACE INTO work_series (work_id, series_id, position) VALUES (?, ?, ?)`)
 	insEd, _ := tx.Prepare(`INSERT OR REPLACE INTO editions (id, work_id, isbn13, isbn10, asin) VALUES (?, ?, ?, ?, ?)`)
@@ -185,7 +187,7 @@ func (b *Builder) loadWorks(db *sql.DB) error {
 		if err := json.Unmarshal(line, &w); err != nil {
 			return err
 		}
-		if _, err := insWork.Exec(w.ID, w.Title, w.UsersCount, w.UpdatedAt, string(line)); err != nil {
+		if _, err := insWork.Exec(w.ID, w.Title, w.UsersCount, w.RatingsCount, w.UpdatedAt, string(line)); err != nil {
 			return err
 		}
 		for _, c := range w.Contributions {

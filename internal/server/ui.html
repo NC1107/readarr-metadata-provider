@@ -11,12 +11,16 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 system-ui, sans-serif; }
+    font: 14px/1.5 system-ui, sans-serif; height: 100vh; overflow: hidden; }
   .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr) 330px;
-    gap: 12px; padding: 12px; align-items: start; }
+    gap: 12px; padding: 12px; align-items: stretch; height: 100vh; }
   main { background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 16px; min-width: 0; }
-  @media (max-width: 1250px) { .layout { grid-template-columns: 1fr; } }
+    border-radius: 10px; padding: 16px; min-width: 0;
+    display: flex; flex-direction: column; min-height: 0; }
+  @media (max-width: 1250px) {
+    body { height: auto; overflow: auto; }
+    .layout { grid-template-columns: 1fr; height: auto; }
+  }
 
   .rail { background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; position: sticky; top: 12px;
@@ -59,10 +63,14 @@
   button { background: var(--accent); border-color: var(--accent); color: #10131c;
     font-weight: 600; cursor: pointer; }
   .qerr { margin: 12px 0 0; color: var(--bad); font-size: 13px; }
-  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;
+    flex: 1; min-height: 0; }
   @media (max-width: 1600px) { .cols { grid-template-columns: 1fr; } }
   .col { background: var(--bg); border: 1px solid var(--line);
-    border-radius: 10px; overflow: hidden; }
+    border-radius: 10px; overflow: hidden;
+    display: flex; flex-direction: column; min-height: 0; }
+  .colhead, .issues { flex: none; }
+  .colbody { overflow-y: auto; min-height: 0; }
   .colhead { display: flex; justify-content: space-between; align-items: baseline;
     padding: 10px 14px; border-bottom: 1px solid var(--line); }
   .colhead .name { font-weight: 600; }
@@ -85,7 +93,7 @@
   .row.match { border-left: 3px solid transparent; padding-left: 11px; }
   .empty { padding: 22px 14px; color: var(--dim); }
   .err { padding: 14px; color: var(--bad); font-size: 13px; word-break: break-all; }
-  .foot { margin-top: 26px; color: var(--dim); font-size: 12px; }
+  .foot { margin-top: 12px; color: var(--dim); font-size: 12px; flex: none; }
   .foot a { color: var(--accent); text-decoration: none; }
 </style>
 </head>
@@ -133,7 +141,7 @@ const $ = id => document.getElementById(id);
 const COLS = [['local', 'local server'], ['official', 'readarr endpoint'], ['hardcover', 'hardcover']];
 for (const [id, name] of COLS) {
   $(id).innerHTML = `<div class="colhead"><span class="name">${name}</span></div>
-    <div class="empty">waiting for a query</div>`;
+    <div class="colbody"><div class="empty">waiting for a query</div></div>`;
 }
 
 $('f').addEventListener('submit', async e => {
@@ -143,7 +151,7 @@ $('f').addEventListener('submit', async e => {
   $('qerr').hidden = true;
   for (const [id, name] of COLS) {
     $(id).innerHTML = `<div class="colhead"><span class="name">${name}</span></div>
-      <div class="empty">querying…</div>`;
+      <div class="colbody"><div class="empty">querying…</div></div>`;
   }
   try {
     const r = await fetch(`/ui/query?mode=${$('mode').value}&q=${encodeURIComponent(q)}`);
@@ -166,11 +174,12 @@ function render(d) {
 function side(s, otherIDs, otherFailed) {
   let h = `<div class="colhead"><span class="name">${esc(s.label)}</span>
     <span class="chips">${s.count} result${s.count === 1 ? '' : 's'} · ${s.tookMs}ms · ${fmtBytes(s.bytes)}</span></div>`;
-  if (s.error) return h + `<div class="err">${esc(s.error)}</div>`;
+  if (s.error) return h + `<div class="colbody"><div class="err">${esc(s.error)}</div></div>`;
   h += s.formatIssues.length
     ? `<div class="issues">format: ${esc(s.formatIssues.join(', '))}</div>`
     : `<div class="issues ok">format matches what the client expects</div>`;
-  if (!s.items.length) return h + `<div class="empty">no results</div>`;
+  if (!s.items.length) return h + `<div class="colbody"><div class="empty">no results</div></div>`;
+  h += `<div class="colbody">`;
   for (const it of s.items) {
     const cls = otherFailed ? 'match' : (otherIDs.has(it.workId) ? 'match' : 'mismatch');
     const tag = it.url ? `a href="${esc(it.url)}" target="_blank" rel="noopener"` : 'div';
@@ -181,7 +190,7 @@ function side(s, otherIDs, otherFailed) {
         <br>w${it.workId}</div>
     </${it.url ? 'a' : 'div'}>`;
   }
-  return h;
+  return h + `</div>`;
 }
 
 async function poll() {

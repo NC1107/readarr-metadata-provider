@@ -200,7 +200,7 @@ func (s *store) authorWorkIDs(authorID int64, limit int) ([]int64, error) {
 		SELECT w.id FROM work_authors wa
 		JOIN works w ON w.id = wa.work_id
 		WHERE wa.author_id = ?
-		ORDER BY w.users_count DESC, w.id
+		ORDER BY w.ratings_count DESC, w.id
 		LIMIT ?`, authorID, limit)
 	if err != nil {
 		return nil, err
@@ -227,7 +227,7 @@ func (s *store) seriesWorks(seriesID int64, limit int) ([]seriesLink, error) {
 		SELECT ws.work_id, ws.position FROM work_series ws
 		JOIN works w ON w.id = ws.work_id
 		WHERE ws.series_id = ?
-		ORDER BY ws.position IS NULL, ws.position, w.users_count DESC
+		ORDER BY ws.position IS NULL, ws.position, w.ratings_count DESC
 		LIMIT ?`, seriesID, limit)
 	if err != nil {
 		return nil, err
@@ -310,7 +310,7 @@ func (s *store) seriesPositionWorks(query string) []int64 {
 	err = s.db.QueryRow(`
 		SELECT s.id FROM series s
 		WHERE s.name LIKE '%' || ?1 || '%'
-		ORDER BY (SELECT COALESCE(SUM(w.users_count), 0)
+		ORDER BY (SELECT COALESCE(SUM(w.ratings_count), 0)
 			FROM work_series ws JOIN works w ON w.id = ws.work_id
 			WHERE ws.series_id = s.id) DESC
 		LIMIT 1`, name).Scan(&seriesID)
@@ -321,7 +321,7 @@ func (s *store) seriesPositionWorks(query string) []int64 {
 		SELECT ws.work_id FROM work_series ws
 		JOIN works w ON w.id = ws.work_id
 		WHERE ws.series_id = ? AND ws.position = ?
-		ORDER BY w.users_count DESC
+		ORDER BY w.ratings_count DESC
 		LIMIT 3`, seriesID, position)
 	if err != nil {
 		return nil
@@ -346,7 +346,7 @@ func firstID(ids []int64) int64 {
 
 func (s *store) workPopularity(id int64) int64 {
 	var n int64
-	_ = s.db.QueryRow(`SELECT users_count FROM works WHERE id = ?`, id).Scan(&n)
+	_ = s.db.QueryRow(`SELECT ratings_count FROM works WHERE id = ?`, id).Scan(&n)
 	return n
 }
 
@@ -359,7 +359,7 @@ func (s *store) ftsWorks(query string, limit int) ([]int64, error) {
 		SELECT w.id
 		FROM search s JOIN works w ON w.id = s.rowid
 		WHERE search MATCH ?
-		ORDER BY bm25(search, 10.0, 5.0, 3.0) - 2.0*ln(1 + w.users_count)
+		ORDER BY bm25(search, 10.0, 5.0, 3.0) - 2.0*ln(1 + w.ratings_count)
 		LIMIT ?`, match, limit)
 	if err != nil {
 		return nil, err
@@ -456,7 +456,7 @@ func (s *store) fuzzyAuthorID(query string) int64 {
 
 func (s *store) authorPopularity(authorID int64) (int64, int64) {
 	var pop int64
-	_ = s.db.QueryRow(`SELECT COALESCE(SUM(w.users_count), 0)
+	_ = s.db.QueryRow(`SELECT COALESCE(SUM(w.ratings_count), 0)
 		FROM work_authors wa JOIN works w ON w.id = wa.work_id
 		WHERE wa.author_id = ?`, authorID).Scan(&pop)
 	return authorID, pop
@@ -498,7 +498,7 @@ func (s *store) authorIDByName(name string) (int64, int64) {
 	}
 	var id, pop int64
 	err := s.db.QueryRow(`
-		SELECT a.id, (SELECT COALESCE(SUM(w.users_count), 0)
+		SELECT a.id, (SELECT COALESCE(SUM(w.ratings_count), 0)
 			FROM work_authors wa JOIN works w ON w.id = wa.work_id
 			WHERE wa.author_id = a.id) AS pop
 		FROM authors a
@@ -512,7 +512,7 @@ func (s *store) authorIDByName(name string) (int64, int64) {
 }
 
 func (s *store) topWorkIDs(limit, offset int) ([]int64, error) {
-	rows, err := s.db.Query(`SELECT id FROM works ORDER BY users_count DESC, id LIMIT ? OFFSET ?`, limit, offset)
+	rows, err := s.db.Query(`SELECT id FROM works ORDER BY ratings_count DESC, id LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
 	}
