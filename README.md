@@ -3,7 +3,7 @@
 Self-hosted, offline-capable metadata provider for Bookshelf/Readarr, backed by a prebuilt dataset from [Hardcover](https://hardcover.app).
 Same recipe as [lidarr-metadata-provider](https://github.com/NC1107/lidarr-metadata-provider): a single Go binary serving precomputed responses from read-only SQLite, so end users never query the upstream API.
 
-Status: Phase 2 (dataset builder). See PLAN.md.
+Status: Phase 3 (server). See PLAN.md.
 
 ## Seeder
 
@@ -25,5 +25,14 @@ go build -o bin/build ./cmd/build
 ```
 
 Produces normalized tables (works, authors, series, editions, link tables) keyed by Hardcover ids, plus an FTS5 search index over titles, author names, and series names.
+
+## Server
+
+```sh
+go build -o bin/serve ./cmd/serve
+./bin/serve -db data/dataset/metadata.db -addr :8816
+```
+
+Serves the Readarr/Bookshelf metadata contract (same shapes and redirect flows as rreading-glasses' Hardcover flavor, Hardcover ids as ForeignIds): `/search`, `/author/{id}`, `/work/{id}`, `/book/{id}`, `/book/isbn/{isbn}`, `/book/asin/{asin}`, `/book/bulk`, `/series/{id}`, `/author/changed`, `/recommended`.
 
 Book and author metadata provided by Hardcover.
