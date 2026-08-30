@@ -29,7 +29,8 @@ COPY --from=build /out/build /usr/local/bin/readarr-metadata-build
 COPY --from=build /out/seed /usr/local/bin/readarr-metadata-seed
 
 # The dataset lives on a volume rather than in the image, so the data and
-# the binary update independently.
+# the binary update independently. An empty volume is fine: the server
+# downloads the published snapshot on first boot.
 VOLUME /data
 WORKDIR /data
 USER readarr

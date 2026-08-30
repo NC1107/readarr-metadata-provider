@@ -10,14 +10,36 @@ This is the offline version of that: the whole dataset (about 2.8 million books,
 It speaks the same API as rreading-glasses' hardcover flavor, same shapes, same redirect flows, same hardcover ids, so bookshelf and readarr treat it as a drop-in.
 Responses are checked field by field against the live service so imports behave the same.
 
-Status: working end to end, not released yet.
-There's no published dataset or docker image so far, you have to build your own with a hardcover API key.
+Status: working end to end, dataset published, no docker image pushed yet so compose builds it locally.
 Book data comes from [hardcover](https://hardcover.app), who are good people, be considerate with their API.
 
-## Building the dataset
+## Quick start
 
-Prebuilt dataset snapshots on github releases are planned, so most people will just download one instead of seeding their own.
-Until then, or if you'd rather build yours from scratch, here's what it costs: a full seed is about 11,600 API queries (two sweeps of the ~2.9M book id space at 500 rows per query).
+```
+git clone https://github.com/NC1107/readarr-metadata-provider
+cd readarr-metadata-provider
+docker compose up -d
+```
+
+On first boot it downloads the dataset (1.1GB compressed, 6.6GB on disk), checks it against its published checksum, and serves it.
+No hardcover key needed, no seeding, no import step.
+After that it works offline.
+
+Then point readarr or bookshelf at it.
+The metadata source has no field in the UI, so `switch.sh` sets it through the REST API, live, no restart:
+
+```
+./switch.sh --readarr http://localhost:8787 --api-key <key> --to http://localhost:8816/
+```
+
+Your API key is under Settings > General > Security.
+Run it again with `--revert` to go back.
+
+## Building the dataset yourself
+
+You don't need to, the releases are there.
+This is if you want your own, or newer data than the last snapshot.
+Here's what it costs: a full seed is about 11,600 API queries (two sweeps of the ~2.9M book id space at 500 rows per query).
 Hardcover's free tier allows 5,000 queries a day, so that's three days on a free account, or a single day as a supporter (50,000/day).
 The seeder checkpoints as it goes and stops cleanly when the daily budget runs low, so you just rerun it the next day and it resumes.
 Daily delta syncs after that are a few hundred queries.
@@ -46,15 +68,8 @@ go build -o bin/serve ./cmd/serve
 ./bin/serve -db data/dataset/metadata.db -addr :8816
 ```
 
-Then point readarr or bookshelf at it.
-The metadata source has no field in the UI, so `switch.sh` sets it through the REST API, live, no restart:
-
-```sh
-./switch.sh --readarr http://localhost:8787 --api-key <key> --to http://localhost:8816/
-```
-
-Your API key is under Settings > General > Security.
-Run it again with `--revert` to go back.
+Same as the container: if that file doesn't exist it downloads the published dataset first.
+Pass `-dataset-url ""` to turn that off, or point it at a specific snapshot.
 
 ## Comparing it against the public service
 

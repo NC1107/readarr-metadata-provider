@@ -8,9 +8,19 @@ services:
     ports:
       - "8816:8816"
     volumes:
-      # The dataset lives here and survives image updates. Place metadata.db
-      # in this volume (dataset auto-download on first boot is planned).
+      # The dataset lives here and survives image updates. On first boot the
+      # server downloads it, verifies it against the published checksum, and
+      # serves it; after that it works offline.
       - readarr-metadata:/data
+    environment:
+      # Set a HARDCOVER_TOKEN to enable the /ui console's live hardcover
+      # comparison column. Serving does not need one.
+      # - HARDCOVER_TOKEN=hc_pat_...
+      #
+      # Pin a specific snapshot instead of the newest published one:
+      # - DATASET_URL=https://github.com/NC1107/readarr-metadata-provider/releases/download/dataset-20260830/metadata.db.zst
+      - SEARCH_MIN_RATINGS=5
+      - SEARCH_LANGUAGES=en
 
 volumes:
   readarr-metadata:

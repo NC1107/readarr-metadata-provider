@@ -169,6 +169,26 @@ function render(d) {
   $('local').innerHTML = side(d.local, officialIDs, d.official.error);
   $('official').innerHTML = side(d.official, localIDs, d.local.error);
   $('hardcover').innerHTML = side(d.hardcover, localIDs, d.local.error);
+  lockScroll();
+}
+
+// Scrolling any column scrolls all three, so the same rank stays side by
+// side. Rows are a uniform height, so matching pixels matches positions.
+// Listeners attach to the current elements; innerHTML replaces them on each
+// render, which drops the old ones with them.
+function lockScroll() {
+  const bodies = COLS.map(([id]) => $(id).querySelector('.colbody')).filter(Boolean);
+  let syncing = false;
+  for (const body of bodies) {
+    body.addEventListener('scroll', () => {
+      if (syncing) return;
+      syncing = true;
+      for (const other of bodies) {
+        if (other !== body) other.scrollTop = body.scrollTop;
+      }
+      requestAnimationFrame(() => { syncing = false; });
+    });
+  }
 }
 
 function side(s, otherIDs, otherFailed) {
