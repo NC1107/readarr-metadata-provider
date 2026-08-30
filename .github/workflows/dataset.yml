@@ -60,6 +60,11 @@ jobs:
       - name: Publish dataset snapshot
         run: |
           TAG="dataset-$(date -u +%Y%m%d)"
+          # Rebuilding the same day is normal (a re-run, or a manual publish
+          # earlier), so replace that day's release rather than failing on it.
+          # Deleting keeps the git tag and lets create upload the assets
+          # atomically, which re-uploading over existing assets does not.
+          gh release delete "$TAG" --yes 2>/dev/null || true
           gh release create "$TAG" dist/* \
             --title "Dataset $(date -u +%Y-%m-%d)" \
             --notes "Book metadata snapshot built from Hardcover data. See manifest.txt for checksums and reassembly."
