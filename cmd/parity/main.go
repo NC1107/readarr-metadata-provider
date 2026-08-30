@@ -44,12 +44,27 @@ func main() {
 func run() error {
 	base := flag.String("base", "http://localhost:8816", "the server under test")
 	queryFile := flag.String("queries", "fixtures/search-queries.txt", "file of queries, one per line")
-	pace := flag.Duration("pace", 5*time.Second, "delay between official-instance queries")
+	pace := flag.Duration("pace", 5*time.Second, "delay between reference queries")
 	deep := flag.Bool("deep", false, "field-by-field work comparison instead of search parity")
+	source := flag.String("source", "official", `reference: "official" (the public rreading-glasses instance) or "hardcover" (Hardcover's own search API, needs HARDCOVER_TOKEN; this is the same backend the official instance defers to, minus its HTTP cache and throttle)`)
 	flag.Parse()
 
 	if *deep {
 		return deepCompare(*base)
+	}
+
+	reference := func(q string) ([]searchResult, error) { return search(officialBase, q) }
+	referenceName := officialBase
+	if *source == "hardcover" {
+		token := os.Getenv("HARDCOVER_TOKEN")
+		if token == "" {
+			return fmt.Errorf("-source hardcover needs HARDCOVER_TOKEN set")
+		}
+		reference = func(q string) ([]searchResult, error) { return searchHardcover(token, q) }
+		referenceName = "Hardcover's search API"
+		if *pace == 5*time.Second {
+			*pace = 1500 * time.Millisecond // Their limit is 60/min; stay well under.
+		}
 	}
 
 	queries, err := readQueries(*queryFile)
@@ -57,7 +72,7 @@ func run() error {
 		return err
 	}
 	fmt.Printf("Comparing %s against %s over %d queries (paced %s apart)\n\n",
-		*base, officialBase, len(queries), *pace)
+		*base, referenceName, len(queries), *pace)
 
 	var top1, top5, missing, answered int
 	for i, q := range queries {
@@ -65,7 +80,7 @@ func run() error {
 			time.Sleep(*pace)
 		}
 		ours, ourErr := search(*base, q)
-		theirs, theirErr := search(officialBase, q)
+		theirs, theirErr := reference(q)
 		if ourErr != nil || theirErr != nil {
 			fmt.Printf("  ERROR  %-40q ours=%v theirs=%v\n", q, ourErr, theirErr)
 			continue
@@ -204,6 +219,68 @@ func search(base, q string) ([]searchResult, error) {
 	}
 	var out []searchResult
 	return out, json.Unmarshal(body, &out)
+}
+
+// searchHardcover asks Hardcover's search API directly, with the exact
+// query configuration rreading-glasses uses, so the ranking it returns is
+// what the official instance would serve uncached.
+func searchHardcover(token, q string) ([]searchResult, error) {
+	payload, _ := json.Marshal(map[string]any{
+		"query": `query ($q: String!) {
+			search(query: $q, per_page: 15, query_type: "book",
+				fields: "title,isbns,series_names,author_names,alternative_titles",
+				weights: "5,1,3,5,1",
+				sort: "ratings_count:desc,_text_match:desc") { ids }
+		}`,
+		"variables": map[string]string{"q": q},
+	})
+	req, err := http.NewRequest(http.MethodPost, "https://api.hardcover.app/v1/graphql", strings.NewReader(string(payload)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Data struct {
+			Search struct {
+				IDs []json.Number `json:"ids"`
+			} `json:"search"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("bad response: %s", truncateStr(string(body), 120))
+	}
+	if len(out.Errors) > 0 {
+		return nil, fmt.Errorf("graphql: %s", out.Errors[0].Message)
+	}
+	results := make([]searchResult, 0, len(out.Data.Search.IDs))
+	for _, id := range out.Data.Search.IDs {
+		n, err := id.Int64()
+		if err != nil {
+			continue
+		}
+		results = append(results, searchResult{WorkID: n})
+	}
+	return results, nil
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
 }
 
 func getJSON(u string) (map[string]any, error) {

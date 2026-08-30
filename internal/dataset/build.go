@@ -15,6 +15,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/NC1107/readarr-metadata-provider/internal/textnorm"
 	_ "modernc.org/sqlite"
 )
 
@@ -32,6 +33,7 @@ CREATE TABLE works (
 CREATE TABLE authors (
 	id INTEGER PRIMARY KEY,
 	name TEXT NOT NULL,
+	norm_name TEXT NOT NULL,
 	updated_at TEXT,
 	json TEXT NOT NULL
 );
@@ -69,6 +71,7 @@ CREATE VIRTUAL TABLE search USING fts5(title, authors, series, content='');
 `
 
 const postIndexes = `
+CREATE INDEX idx_authors_norm_name ON authors (norm_name);
 CREATE INDEX idx_work_authors_author ON work_authors (author_id, work_id);
 CREATE INDEX idx_work_series_series ON work_series (series_id, work_id);
 CREATE INDEX idx_editions_work ON editions (work_id);
@@ -250,8 +253,8 @@ func (b *Builder) loadAuthorsAndSeries(db *sql.DB) error {
 	}
 	defer tx.Rollback()
 
-	insAuthor, _ := tx.Prepare(`INSERT INTO authors (id, name, updated_at, json) VALUES (?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, updated_at=excluded.updated_at, json=excluded.json
+	insAuthor, _ := tx.Prepare(`INSERT INTO authors (id, name, norm_name, updated_at, json) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, norm_name=excluded.norm_name, updated_at=excluded.updated_at, json=excluded.json
 		WHERE excluded.updated_at >= authors.updated_at`)
 	insSeries, _ := tx.Prepare(`INSERT OR REPLACE INTO series (id, name, json) VALUES (?, ?, ?)`)
 
@@ -260,7 +263,7 @@ func (b *Builder) loadAuthorsAndSeries(db *sql.DB) error {
 		if err := json.Unmarshal(raw, &k); err != nil || k.ID == nil {
 			return err
 		}
-		_, err := insAuthor.Exec(*k.ID, k.Name, k.UpdatedAt, string(raw))
+		_, err := insAuthor.Exec(*k.ID, k.Name, textnorm.Name(k.Name), k.UpdatedAt, string(raw))
 		return err
 	}
 	putSeries := func(raw json.RawMessage) error {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/NC1107/readarr-metadata-provider/internal/textnorm"
 	_ "modernc.org/sqlite"
 )
 
@@ -105,7 +106,8 @@ type rawSeries struct {
 }
 
 type store struct {
-	db *sql.DB
+	db          *sql.DB
+	hasNormName bool
 }
 
 func openStore(path string) (*store, error) {
@@ -116,7 +118,11 @@ func openStore(path string) (*store, error) {
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
-	return &store{db: db}, nil
+	s := &store{db: db}
+	var n int
+	_ = db.QueryRow(`SELECT count(*) FROM pragma_table_info('authors') WHERE name = 'norm_name'`).Scan(&n)
+	s.hasNormName = n > 0
+	return s, nil
 }
 
 func getJSON[T any](s *store, query string, id int64) (*T, error) {
@@ -226,10 +232,46 @@ func (s *store) seriesWorks(seriesID int64, limit int) ([]seriesLink, error) {
 	return links, rows.Err()
 }
 
-// searchWorks runs the FTS query with popularity-blended ranking, validated
-// during the dataset build to surface canonical works above Hardcover's
-// zero-shelf duplicate imports.
+// searchWorks ranks results with two signals. A query that is exactly an
+// author's name returns that author's works most-popular first, which is
+// what someone typing "brandon sanderson" wants; bm25 alone picks a
+// quasi-arbitrary work there because every candidate matches the authors
+// column equally. Everything else runs through FTS with popularity-blended
+// ranking, validated to surface canonical works above Hardcover's
+// zero-shelf duplicate imports. This deliberately avoids upstream's global
+// ratings_count:desc sort, which promotes any popular book carrying the
+// query in a secondary field (searching "stephen king" there returns Lord
+// of the Flies, via an introduction credit).
 func (s *store) searchWorks(query string, limit int) ([]int64, error) {
+	ftsIDs, err := s.ftsWorks(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	// Hardcover carries junk author records named after book titles, so the
+	// author path must out-shelve the best text match to win.
+	authorID, authorPop := s.authorIDByName(query)
+	if authorID != 0 && authorPop >= s.workPopularity(firstID(ftsIDs)) {
+		if ids, err := s.authorWorkIDs(authorID, limit); err == nil && len(ids) > 0 {
+			return ids, nil
+		}
+	}
+	return ftsIDs, nil
+}
+
+func firstID(ids []int64) int64 {
+	if len(ids) == 0 {
+		return 0
+	}
+	return ids[0]
+}
+
+func (s *store) workPopularity(id int64) int64 {
+	var n int64
+	_ = s.db.QueryRow(`SELECT users_count FROM works WHERE id = ?`, id).Scan(&n)
+	return n
+}
+
+func (s *store) ftsWorks(query string, limit int) ([]int64, error) {
 	match := ftsQuery(query)
 	if match == "" {
 		return nil, nil
@@ -268,6 +310,32 @@ func (s *store) authorAggregates(authorID int64) (count int64, avg float32) {
 		avg = float32(sum / float64(count))
 	}
 	return count, avg
+}
+
+// authorIDByName resolves a query that is an author's name modulo case and
+// punctuation, preferring the author with the most shelved works when names
+// collide, and reporting that popularity so the caller can weigh it.
+// Datasets built before the norm_name column fall back to an exact match.
+func (s *store) authorIDByName(name string) (int64, int64) {
+	where := `a.norm_name = ?1`
+	arg := textnorm.Name(name)
+	if !s.hasNormName {
+		where = `a.name = ?1 COLLATE NOCASE`
+		arg = strings.TrimSpace(name)
+	}
+	var id, pop int64
+	err := s.db.QueryRow(`
+		SELECT a.id, (SELECT COALESCE(SUM(w.users_count), 0)
+			FROM work_authors wa JOIN works w ON w.id = wa.work_id
+			WHERE wa.author_id = a.id) AS pop
+		FROM authors a
+		WHERE `+where+`
+		ORDER BY pop DESC
+		LIMIT 1`, arg).Scan(&id, &pop)
+	if err != nil {
+		return 0, 0
+	}
+	return id, pop
 }
 
 func (s *store) topWorkIDs(limit, offset int) ([]int64, error) {
