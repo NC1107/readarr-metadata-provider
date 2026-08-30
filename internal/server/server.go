@@ -4,14 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/NC1107/readarr-metadata-provider/internal/hcapi"
 )
@@ -21,6 +21,50 @@ type Server struct {
 	maxWorks     int
 	officialBase string
 	hc           *hcapi.Client
+	metrics      *metrics
+	dbPath       string
+
+	statsMu sync.Mutex
+	stats   datasetStats
+}
+
+// datasetStats is filled in the background at startup; count queries over
+// millions of rows are too slow for the request path.
+type datasetStats struct {
+	Ready       bool   `json:"ready"`
+	Works       int64  `json:"works"`
+	Authors     int64  `json:"authors"`
+	Series      int64  `json:"series"`
+	Editions    int64  `json:"editions"`
+	GeneratedAt string `json:"generatedAt"`
+	SizeBytes   int64  `json:"sizeBytes"`
+}
+
+func (s *Server) loadStats() {
+	var st datasetStats
+	if fi, err := os.Stat(s.dbPath); err == nil {
+		st.SizeBytes = fi.Size()
+	}
+	_ = s.app.store.db.QueryRow(`SELECT value FROM meta WHERE key = 'generated_at'`).Scan(&st.GeneratedAt)
+	for _, c := range []struct {
+		table string
+		dst   *int64
+	}{
+		{"works", &st.Works}, {"authors", &st.Authors},
+		{"series", &st.Series}, {"editions", &st.Editions},
+	} {
+		_ = s.app.store.db.QueryRow(`SELECT count(*) FROM ` + c.table).Scan(c.dst)
+	}
+	st.Ready = true
+	s.statsMu.Lock()
+	s.stats = st
+	s.statsMu.Unlock()
+}
+
+func (s *Server) datasetStats() datasetStats {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	return s.stats
 }
 
 // New opens the dataset. hcToken is optional; with it, the /ui console adds
@@ -33,10 +77,17 @@ func New(dbPath string, maxWorks int, officialBase, hcToken string) (*Server, er
 	if officialBase == "" {
 		officialBase = defaultOfficialBase
 	}
-	s := &Server{app: &app{store: st}, maxWorks: maxWorks, officialBase: officialBase}
+	s := &Server{
+		app:          &app{store: st},
+		maxWorks:     maxWorks,
+		officialBase: officialBase,
+		metrics:      newMetrics(),
+		dbPath:       dbPath,
+	}
 	if hcToken != "" {
 		s.hc = hcapi.NewClient(hcToken)
 	}
+	go s.loadStats()
 	return s, nil
 }
 
@@ -54,17 +105,11 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("/series/{id}", s.getSeries)
 
 	mux := http.NewServeMux()
-	mux.Handle("/", api)
+	// The console's own probes use the raw api handler, so only real client
+	// traffic is instrumented into the history and counters.
+	mux.Handle("/", s.instrument(api))
 	s.mountUI(mux, api)
-	return logRequests(mux)
-}
-
-func logRequests(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s (%s)", r.Method, r.URL.RequestURI(), time.Since(start).Round(time.Millisecond))
-	})
+	return mux
 }
 
 func (s *Server) error(w http.ResponseWriter, err error) {

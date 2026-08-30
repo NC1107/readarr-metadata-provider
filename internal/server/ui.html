@@ -12,7 +12,39 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 14px/1.5 system-ui, sans-serif; }
-  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; }
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr) 330px;
+    gap: 18px; max-width: 1780px; margin: 0 auto; padding: 24px 16px 64px;
+    align-items: start; }
+  @media (max-width: 1250px) { .layout { grid-template-columns: 1fr; } }
+
+  .rail { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; position: sticky; top: 16px;
+    max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+  .railhead { padding: 10px 14px; border-bottom: 1px solid var(--line);
+    font-weight: 600; display: flex; justify-content: space-between;
+    align-items: baseline; }
+  .railhead span { color: var(--dim); font-weight: 400; font-size: 12px; }
+  .railbody { overflow-y: auto; }
+
+  .stat { display: flex; justify-content: space-between; padding: 7px 14px;
+    border-bottom: 1px solid var(--line); font-size: 13px; }
+  .stat:last-child { border-bottom: 0; }
+  .stat .k { color: var(--dim); }
+  .stathead { padding: 8px 14px 2px; color: var(--dim); font-size: 11px;
+    text-transform: uppercase; letter-spacing: .06em; }
+
+  .hrow { display: flex; gap: 8px; padding: 6px 12px; font-size: 12px;
+    border-bottom: 1px solid var(--line); font-family: ui-monospace, monospace;
+    align-items: baseline; white-space: nowrap; }
+  .hrow:last-child { border-bottom: 0; }
+  .hrow .t { color: var(--dim); flex: none; }
+  .hrow .p { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+  .hrow .st { flex: none; }
+  .hrow .st.ok { color: var(--good); } .hrow .st.redir { color: var(--accent); }
+  .hrow .st.err { color: var(--bad); }
+  .hrow .ms { color: var(--dim); flex: none; }
+  .hempty { padding: 18px 14px; color: var(--dim); font-size: 13px; }
+
   h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
   h1 span { color: var(--dim); font-weight: 400; }
   .sub { color: var(--dim); margin-bottom: 20px; font-size: 13px; }
@@ -27,8 +59,8 @@
     font-weight: 600; cursor: pointer; }
   .verdict { margin: 14px 0 18px; color: var(--dim); font-size: 13px; min-height: 20px; }
   .verdict b { color: var(--text); }
-  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-  @media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } }
+  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  @media (max-width: 1600px) { .cols { grid-template-columns: 1fr; } }
   .col { background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; overflow: hidden; }
   .colhead { display: flex; justify-content: space-between; align-items: baseline;
@@ -41,10 +73,8 @@
   .row { display: flex; gap: 12px; padding: 10px 14px;
     border-bottom: 1px solid var(--line); align-items: center; }
   .row:last-child { border-bottom: 0; }
-  .row img { width: 38px; height: 57px; object-fit: cover; border-radius: 4px;
-    background: var(--line); flex: none; }
-  .row .noimg { width: 38px; height: 57px; border-radius: 4px;
-    background: var(--line); flex: none; }
+  .row img, .row .noimg { width: 38px; height: 57px; object-fit: cover;
+    border-radius: 4px; background: var(--line); flex: none; }
   .row .t { font-weight: 550; }
   .row .s { color: var(--dim); font-size: 12.5px; }
   .row .r { margin-left: auto; color: var(--dim); font-size: 12px;
@@ -58,28 +88,42 @@
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>readarr-metadata-provider <span>comparison console</span></h1>
-  <div class="sub">Each query runs against the local server, the readarr endpoint (rreading-glasses), and hardcover's own search.
-    A red edge marks a result the local server ranks differently or lacks.</div>
-  <form id="f">
-    <input type="text" id="q" placeholder="search books or authors, or paste an id…" autofocus>
-    <select id="mode">
-      <option value="search">search</option>
-      <option value="work">work id</option>
-      <option value="author">author id</option>
-      <option value="book">edition id</option>
-    </select>
-    <button>compare</button>
-  </form>
-  <div class="verdict" id="verdict"></div>
-  <div class="cols">
-    <div class="col" id="local"></div>
-    <div class="col" id="official"></div>
-    <div class="col" id="hardcover"></div>
-  </div>
-  <div class="foot">Book data by <a href="https://hardcover.app">hardcover</a>.
-    The readarr endpoint column queries the public rreading-glasses instance; be considerate, it's community-funded.</div>
+<div class="layout">
+
+  <aside class="rail">
+    <div class="railhead">statistics</div>
+    <div class="railbody" id="stats"><div class="hempty">loading…</div></div>
+  </aside>
+
+  <main>
+    <h1>readarr-metadata-provider <span>comparison console</span></h1>
+    <div class="sub">Each query runs against the local server, the readarr endpoint (rreading-glasses), and hardcover's own search.
+      A red edge marks a result the local server ranks differently or lacks.</div>
+    <form id="f">
+      <input type="text" id="q" placeholder="search books or authors, or paste an id…" autofocus>
+      <select id="mode">
+        <option value="search">search</option>
+        <option value="work">work id</option>
+        <option value="author">author id</option>
+        <option value="book">edition id</option>
+      </select>
+      <button>compare</button>
+    </form>
+    <div class="verdict" id="verdict"></div>
+    <div class="cols">
+      <div class="col" id="local"></div>
+      <div class="col" id="official"></div>
+      <div class="col" id="hardcover"></div>
+    </div>
+    <div class="foot">Book data by <a href="https://hardcover.app">hardcover</a>.
+      The readarr endpoint column queries the public rreading-glasses instance; be considerate, it's community-funded.</div>
+  </main>
+
+  <aside class="rail">
+    <div class="railhead">request history <span id="hcount"></span></div>
+    <div class="railbody" id="history"><div class="hempty">no client requests yet</div></div>
+  </aside>
+
 </div>
 <script>
 const $ = id => document.getElementById(id);
@@ -128,10 +172,59 @@ function side(s, otherIDs, otherFailed) {
   return h;
 }
 
+async function poll() {
+  try {
+    const s = await (await fetch('/ui/status')).json();
+    $('stats').innerHTML = statsHTML(s);
+    const rec = s.metrics.recent || [];
+    $('hcount').textContent = rec.length ? `last ${rec.length}` : '';
+    $('history').innerHTML = rec.length ? rec.map(hrow).join('')
+      : `<div class="hempty">no client requests yet</div>`;
+  } catch (e) { /* server briefly away; keep last view */ }
+}
+
+function statsHTML(s) {
+  const d = s.dataset, m = s.metrics;
+  const routes = Object.entries(m.byRoute || {}).sort((a, b) => b[1] - a[1]);
+  return `
+    <div class="stathead">dataset</div>
+    ${d.ready ? `
+      ${stat('works', d.works.toLocaleString())}
+      ${stat('authors', d.authors.toLocaleString())}
+      ${stat('series', d.series.toLocaleString())}
+      ${stat('editions', d.editions.toLocaleString())}
+      ${stat('size', fmtBytes(d.sizeBytes))}
+      ${stat('built', esc((d.generatedAt || '').slice(0, 16).replace('T', ' ')))}`
+    : stat('counting rows…', '')}
+    <div class="stathead">traffic</div>
+    ${stat('uptime', fmtDur(m.uptimeSec))}
+    ${stat('requests', m.total.toLocaleString())}
+    ${stat('errors', m.errors.toLocaleString())}
+    ${stat('avg response', m.avgMs + 'ms')}
+    ${routes.length ? `<div class="stathead">by route</div>` : ''}
+    ${routes.map(([k, v]) => stat('/' + k, v.toLocaleString())).join('')}`;
+}
+
+const stat = (k, v) => `<div class="stat"><span class="k">${esc(k)}</span><span>${v}</span></div>`;
+
+function hrow(r) {
+  const cls = r.status >= 400 ? 'err' : r.status >= 300 ? 'redir' : 'ok';
+  return `<div class="hrow"><span class="t">${esc(r.time)}</span>
+    <span class="p" title="${esc(r.method + ' ' + r.path)}">${esc(r.path)}</span>
+    <span class="st ${cls}">${r.status}</span><span class="ms">${r.ms}ms</span></div>`;
+}
+
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmtBytes = n => n > 1048576 ? (n/1048576).toFixed(1) + 'MB'
+const fmtBytes = n => n > 1073741824 ? (n/1073741824).toFixed(1) + 'GB'
+  : n > 1048576 ? (n/1048576).toFixed(1) + 'MB'
   : n > 1024 ? (n/1024).toFixed(1) + 'KB' : n + 'B';
+const fmtDur = s => s > 86400 ? Math.floor(s/86400) + 'd ' + Math.floor(s%86400/3600) + 'h'
+  : s > 3600 ? Math.floor(s/3600) + 'h ' + Math.floor(s%3600/60) + 'm'
+  : s > 60 ? Math.floor(s/60) + 'm ' + s%60 + 's' : s + 's';
+
+poll();
+setInterval(poll, 2500);
 </script>
 </body>
 </html>

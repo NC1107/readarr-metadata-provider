@@ -32,6 +32,15 @@ func (s *Server) mountUI(mux *http.ServeMux, api http.Handler) {
 		_, _ = w.Write(uiPage)
 	})
 	mux.HandleFunc("GET /ui/query", ui.handleQuery)
+	mux.HandleFunc("GET /ui/status", ui.handleStatus)
+}
+
+func (u *uiServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"dataset": u.server.datasetStats(),
+		"metrics": u.server.metrics.snapshot(),
+	})
 }
 
 type uiServer struct {
