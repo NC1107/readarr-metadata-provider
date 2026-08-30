@@ -64,20 +64,23 @@ Backward compatibility with old Goodreads-ID Readarr databases is explicitly out
   They cooperate with rreading-glasses already, and our model reduces their API load rather than adding to it.
   Not a hard blocker, but do it early.
 
-### Phase 1: Seeder/ETL (Go)
+Status as of 2026-08-30: phases 1-4 are built and deployed; the remaining
+work is listed under "Next" at the end.
+
+### Phase 1: Seeder/ETL (Go) - done
 
 - GraphQL puller using id-range partitioning (range width == row cap so no range can overflow), 5 aliased queries per request.
 - Adaptive rate limiting driven by the `ratelimit` response headers (token bucket: burst 10, refill 60/min, stop at daily remaining ~100).
 - Resumable: checkpoint file records completed id ranges; raw gzipped JSON responses land on disk first so schema/transform changes never force a refetch.
 - Delta mode: pull books/authors where `updated_at > last_sync`, plus a periodic sweep for new max ids.
 
-### Phase 2: Dataset builder
+### Phase 2: Dataset builder - done
 
 - Transform raw JSON into SQLite: `authors`, `works`, `editions`, `series`, `series_works`, `work_authors`, plus precomputed JSON response blobs per entity (the lidarr trick: the server mostly serves prebuilt payloads).
 - FTS5 index over title, subtitle, author name, series name for `/search`.
 - Output: zstd-compressed, split into <2GB chunks for GitHub release limits, with checksums and a version manifest.
 
-### Phase 3: Server (Go)
+### Phase 3: Server (Go) - done, less the live fallback
 
 - Single binary, SQLite opened read-only, serves the contract above with gzip.
 - Search ranking: `bm25(search, 10, 5, 3) - 2*ln(1 + users_count)`, validated to surface canonical works above Hardcover's zero-shelf duplicate imports.
@@ -85,12 +88,27 @@ Backward compatibility with old Goodreads-ID Readarr databases is explicitly out
 - Optional live fallback (off by default): if the user supplies their own Hardcover token, cache-miss lookups for brand-new books hit Hardcover one item at a time and persist to a writable overlay DB.
   This keeps per-user API usage near zero, well inside the free 5k/day tier.
 
-### Phase 4: Distribution and automation
+### Phase 4: Distribution and automation - mostly done
 
 - GitHub Actions: daily delta job, monthly full snapshot release (seed run executed locally or on a runner with the token as a secret).
 - `switch.sh` equivalent that points Bookshelf/Readarr's development settings metadata source at the local instance via its REST API.
 - Docker image + docker-compose example.
 - Comparison web UI against `hardcover.bookinfo.pro` responses, like the lidarr project has.
+
+## What actually happened
+
+- The full seed cost about 11,600 API queries, not the ~1,500 estimated: Hardcover
+  counts each aliased top-level query against the quota, not each HTTP request.
+- The `authors` and `series` GraphQL roots are clamped to 100 rows per query
+  rather than 1,000, which silently truncated the first seed to 13% of authors.
+  Reading the same rows nested under the `books` root avoids the clamp entirely.
+- Search needed more than bm25: author-name queries rank by the author's own
+  works, `<series> <n>` queries resolve through the series tables, and a
+  misspelling falls back to bigram matching on author names. Upstream gets the
+  last of these from Typesense's typo tolerance, which SQLite FTS5 has no
+  equivalent for.
+- Popularity means `ratings_count`, not `users_count`: matching upstream's sort
+  is what makes result ordering line up.
 
 ## Risks
 
@@ -98,6 +116,14 @@ Backward compatibility with old Goodreads-ID Readarr databases is explicitly out
 - **Limit tightening**: if 5k/day shrinks, the raw response cache means we only ever need deltas after the initial seed.
 - **Contract drift**: Bookshelf and other forks may extend the API (see rreading-glasses `FORKS.md`); track their releases.
 - **Search quality**: FTS5 over 2.8M titles needs ranking tuning (weight by `users_count`/`ratings_count`) to match upstream relevance.
+
+## Next
+
+- Live fallback for books newer than the snapshot (Phase 3, deferred).
+- Publish a container image so compose pulls instead of building.
+- Dataset auto-refresh in the running container, like the lidarr provider's
+  `-dataset-refresh`.
+- Test coverage beyond `internal/bootstrap`.
 
 ## Security note
 
