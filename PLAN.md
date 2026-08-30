@@ -80,6 +80,7 @@ Backward compatibility with old Goodreads-ID Readarr databases is explicitly out
 ### Phase 3: Server (Go)
 
 - Single binary, SQLite opened read-only, serves the contract above with gzip.
+- Search ranking: `bm25(search, 10, 5, 3) - 2*ln(1 + users_count)`, validated to surface canonical works above Hardcover's zero-shelf duplicate imports.
 - `/author/changed` served from stored `updated_at` values.
 - Optional live fallback (off by default): if the user supplies their own Hardcover token, cache-miss lookups for brand-new books hit Hardcover one item at a time and persist to a writable overlay DB.
   This keeps per-user API usage near zero, well inside the free 5k/day tier.
