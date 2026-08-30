@@ -129,9 +129,9 @@ func (s *Seeder) Delta(ctx context.Context, spec EntitySpec) error {
 				{_and: [{updated_at: {_eq: $ts}}, {id: {_gt: $id}}]}
 			]},
 			order_by: [{updated_at: asc}, {id: asc}],
-			limit: 1000
+			limit: %d
 		) { %s }
-	}`, spec.Name, spec.Fields)
+	}`, spec.root(), spec.RowCap, spec.Fields)
 
 	total := 0
 	for {
@@ -170,7 +170,7 @@ func (s *Seeder) Delta(ctx context.Context, spec EntitySpec) error {
 			return err
 		}
 		total += len(out.Rows)
-		if len(out.Rows) < 1000 {
+		if int64(len(out.Rows)) < spec.RowCap {
 			break
 		}
 	}
@@ -187,7 +187,7 @@ func (s *Seeder) fetchRange(ctx context.Context, spec EntitySpec, start, end int
 			break
 		}
 		q += fmt.Sprintf("r%d: %s(where: {id: {_gte: %d, _lt: %d}}, limit: %d) { %s }\n",
-			i, spec.Name, lo, hi, spec.RangeWidth, spec.Fields)
+			i, spec.root(), lo, hi, spec.RangeWidth, spec.Fields)
 	}
 	data, err := s.Client.Query(ctx, "{\n"+q+"}", nil)
 	if err != nil {
@@ -205,7 +205,7 @@ func (s *Seeder) fetchRange(ctx context.Context, spec EntitySpec, start, end int
 }
 
 func (s *Seeder) discoverMaxID(ctx context.Context, spec EntitySpec) (int64, error) {
-	q := fmt.Sprintf("{ rows: %s(limit: 1, order_by: {id: desc}) { id } }", spec.Name)
+	q := fmt.Sprintf("{ rows: %s(limit: 1, order_by: {id: desc}) { id } }", spec.root())
 	data, err := s.Client.Query(ctx, q, nil)
 	if err != nil {
 		return 0, err
