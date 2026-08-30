@@ -142,10 +142,10 @@ func (b *Builder) Build() error {
 // workRow is the subset of a raw book row the relational layer needs; the
 // full row is stored verbatim in works.json.
 type workRow struct {
-	ID            int64   `json:"id"`
-	Title         string  `json:"title"`
-	UsersCount    int64   `json:"users_count"`
-	UpdatedAt     string  `json:"updated_at"`
+	ID            int64  `json:"id"`
+	Title         string `json:"title"`
+	UsersCount    int64  `json:"users_count"`
+	UpdatedAt     string `json:"updated_at"`
 	Contributions []struct {
 		AuthorID     *int64  `json:"author_id"`
 		Contribution *string `json:"contribution"`

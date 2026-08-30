@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>readarr-metadata-provider console</title>
+<style>
+  :root {
+    --bg: #12141a; --panel: #1a1d26; --line: #2a2e3b; --text: #d8dbe4;
+    --dim: #8a90a3; --accent: #7aa2f7; --good: #9ece6a; --bad: #f7768e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, sans-serif; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+  h1 span { color: var(--dim); font-weight: 400; }
+  .sub { color: var(--dim); margin-bottom: 20px; font-size: 13px; }
+  form { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  input[type=text] { flex: 1; min-width: 240px; background: var(--panel);
+    border: 1px solid var(--line); color: var(--text); border-radius: 8px;
+    padding: 10px 14px; font-size: 15px; outline: none; }
+  input[type=text]:focus { border-color: var(--accent); }
+  select, button { background: var(--panel); border: 1px solid var(--line);
+    color: var(--text); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
+  button { background: var(--accent); border-color: var(--accent); color: #10131c;
+    font-weight: 600; cursor: pointer; }
+  .verdict { margin: 14px 0 18px; color: var(--dim); font-size: 13px; min-height: 20px; }
+  .verdict b { color: var(--text); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+  .col { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; overflow: hidden; }
+  .colhead { display: flex; justify-content: space-between; align-items: baseline;
+    padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .colhead .name { font-weight: 600; }
+  .chips { color: var(--dim); font-size: 12px; }
+  .issues { padding: 8px 14px; color: var(--bad); font-size: 12px;
+    border-bottom: 1px solid var(--line); }
+  .issues.ok { color: var(--good); }
+  .row { display: flex; gap: 12px; padding: 10px 14px;
+    border-bottom: 1px solid var(--line); align-items: center; }
+  .row:last-child { border-bottom: 0; }
+  .row img { width: 38px; height: 57px; object-fit: cover; border-radius: 4px;
+    background: var(--line); flex: none; }
+  .row .noimg { width: 38px; height: 57px; border-radius: 4px;
+    background: var(--line); flex: none; }
+  .row .t { font-weight: 550; }
+  .row .s { color: var(--dim); font-size: 12.5px; }
+  .row .r { margin-left: auto; color: var(--dim); font-size: 12px;
+    text-align: right; flex: none; }
+  .row.mismatch { border-left: 3px solid var(--bad); padding-left: 11px; }
+  .row.match { border-left: 3px solid transparent; padding-left: 11px; }
+  .empty { padding: 22px 14px; color: var(--dim); }
+  .err { padding: 14px; color: var(--bad); font-size: 13px; word-break: break-all; }
+  .foot { margin-top: 26px; color: var(--dim); font-size: 12px; }
+  .foot a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>readarr-metadata-provider <span>comparison console</span></h1>
+  <div class="sub">Every query runs against this server and the official service side by side.
+    Rows are matched by work id; a red edge marks a result the other side ranked differently or lacks.</div>
+  <form id="f">
+    <input type="text" id="q" placeholder="search books or authors, or paste an id…" autofocus>
+    <select id="mode">
+      <option value="search">search</option>
+      <option value="work">work id</option>
+      <option value="author">author id</option>
+      <option value="book">edition id</option>
+    </select>
+    <button>compare</button>
+  </form>
+  <div class="verdict" id="verdict"></div>
+  <div class="cols">
+    <div class="col" id="local"></div>
+    <div class="col" id="official"></div>
+  </div>
+  <div class="foot">Book data by <a href="https://hardcover.app">Hardcover</a>.
+    The official column queries the public rreading-glasses instance; be considerate, it is community-funded.</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+
+$('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const q = $('q').value.trim();
+  if (!q) return;
+  $('verdict').textContent = 'querying both sides…';
+  $('local').innerHTML = $('official').innerHTML = '';
+  try {
+    const r = await fetch(`/ui/query?mode=${$('mode').value}&q=${encodeURIComponent(q)}`);
+    if (!r.ok) throw new Error(await r.text());
+    render(await r.json());
+  } catch (err) {
+    $('verdict').innerHTML = `<b style="color:var(--bad)">${esc(err.message)}</b>`;
+  }
+});
+
+function render(d) {
+  $('verdict').innerHTML = `<b>${esc(d.verdict)}</b>`;
+  const officialIDs = new Set((d.official.items || []).map(i => i.workId));
+  const localIDs = new Set((d.local.items || []).map(i => i.workId));
+  $('local').innerHTML = side(d.local, officialIDs, d.official.error);
+  $('official').innerHTML = side(d.official, localIDs, d.local.error);
+}
+
+function side(s, otherIDs, otherFailed) {
+  let h = `<div class="colhead"><span class="name">${esc(s.label)}</span>
+    <span class="chips">${s.count} result${s.count === 1 ? '' : 's'} · ${s.tookMs}ms · ${fmtBytes(s.bytes)}</span></div>`;
+  if (s.error) return h + `<div class="err">${esc(s.error)}</div>`;
+  h += s.formatIssues.length
+    ? `<div class="issues">format: ${esc(s.formatIssues.join(', '))}</div>`
+    : `<div class="issues ok">format matches what the client expects</div>`;
+  if (!s.items.length) return h + `<div class="empty">no results</div>`;
+  for (const it of s.items) {
+    const cls = otherFailed ? 'match' : (otherIDs.has(it.workId) ? 'match' : 'mismatch');
+    h += `<div class="row ${cls}">
+      ${it.image ? `<img loading="lazy" src="${esc(it.image)}" alt="">` : `<div class="noimg"></div>`}
+      <div><div class="t">${esc(it.title)}</div><div class="s">${esc(it.subtitle || '')}</div></div>
+      <div class="r">${it.ratings ? `★ ${it.rating.toFixed(2)}<br>${it.ratings.toLocaleString()} ratings` : ''}
+        <br>w${it.workId}</div>
+    </div>`;
+  }
+  return h;
+}
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtBytes = n => n > 1048576 ? (n/1048576).toFixed(1) + 'MB'
+  : n > 1024 ? (n/1024).toFixed(1) + 'KB' : n + 'B';
+</script>
+</body>
+</html>

@@ -14,9 +14,10 @@ func main() {
 	dbPath := flag.String("db", "data/dataset/metadata.db", "path to metadata.db")
 	addr := flag.String("addr", ":8816", "listen address")
 	maxWorks := flag.Int("max-works", 2000, "maximum works returned per author or series")
+	officialBase := flag.String("official", "", "reference metadata service for the /ui comparison console")
 	flag.Parse()
 
-	s, err := server.New(*dbPath, *maxWorks)
+	s, err := server.New(*dbPath, *maxWorks, *officialBase)
 	if err != nil {
 		log.Fatal(err)
 	}

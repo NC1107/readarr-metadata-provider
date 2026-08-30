@@ -1,0 +1,27 @@
+# Search parity queries: a spread of exact titles, author names, series
+# names, misspellings, and ambiguous strings. One per line.
+the name of the wind
+stephen king
+brandon sanderson
+mistborn
+project hail mary
+dune
+agatha christie
+murder on the orient express
+harry potter and the philosopher's stone
+lord of the rings
+the hobbit
+jane austen
+pride and prejudice
+george orwell
+1984
+neil gaiman
+american gods
+discworld
+terry pratchett
+the martian
+red rising
+sarah j maas
+a court of thorns and roses
+fourth wing
+colleen hoover

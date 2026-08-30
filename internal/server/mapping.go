@@ -58,17 +58,21 @@ func releaseDate(d string) string {
 	return d
 }
 
+// editionFormat prefers Hardcover's edition_format string (what upstream
+// serves); older raw rows without it fall back to the reading format id.
 func editionFormat(e *rawEdition) (format string, isEbook bool) {
+	isEbook = e.FormatID == formatEbook ||
+		e.EditionFormat == "ebook" || e.EditionFormat == "Kindle Edition"
+	if e.EditionFormat != "" {
+		return e.EditionFormat, isEbook
+	}
 	switch e.FormatID {
 	case formatEbook:
 		return "ebook", true
 	case formatAudio:
 		return "Audiobook", false
 	}
-	if e.Physical != "" {
-		return e.Physical, false
-	}
-	return "", false
+	return e.Physical, isEbook
 }
 
 func pickEdition(b *rawBook, editionID int64) *rawEdition {
@@ -167,7 +171,9 @@ func (a *app) bookResource(b *rawBook, e *rawEdition, authorID int64, role strin
 	}
 	language := ""
 	if e.Language != nil {
-		language = iso639_3(e.Language.Code2)
+		if language = e.Language.Code3; language == "" {
+			language = iso639_3(e.Language.Code2)
+		}
 	}
 	imageURL := e.CachedImage.URL
 	if imageURL == "" {
@@ -178,26 +184,27 @@ func (a *app) bookResource(b *rawBook, e *rawEdition, authorID int64, role strin
 		release = b.ReleaseDate
 	}
 	return bookResource{
-		ForeignID:      e.ID,
-		Asin:           e.ASIN,
-		Description:    orNA(b.Description),
-		Isbn13:         e.ISBN13,
-		Title:          short,
-		FullTitle:      full,
-		ShortTitle:     short,
-		Language:       language,
-		Format:         format,
-		Publisher:      publisher,
-		ImageURL:       imageURL,
-		IsEbook:        isEbook,
-		NumPages:       e.Pages,
-		RatingCount:    b.RatingsCount,
-		AverageRating:  b.Rating,
-		RatingSum:      int64(float64(b.RatingsCount) * b.Rating),
-		URL:            "https://hardcover.app/books/" + b.Slug,
-		ReleaseDate:    releaseDate(release),
-		ReleaseDateRaw: release,
-		Contributors:   []contributorResource{{ForeignID: authorID, Role: role}},
+		ForeignID:          e.ID,
+		Asin:               e.ASIN,
+		Description:        orNA(b.Description),
+		Isbn13:             e.ISBN13,
+		Title:              short,
+		FullTitle:          full,
+		ShortTitle:         short,
+		Language:           language,
+		Format:             format,
+		EditionInformation: e.EditionInfo,
+		Publisher:          publisher,
+		ImageURL:           imageURL,
+		IsEbook:            isEbook,
+		NumPages:           e.Pages,
+		RatingCount:        b.RatingsCount,
+		AverageRating:      b.Rating,
+		RatingSum:          int64(float64(b.RatingsCount) * b.Rating),
+		URL:                "https://hardcover.app/books/" + b.Slug,
+		ReleaseDate:        releaseDate(release),
+		ReleaseDateRaw:     release,
+		Contributors:       []contributorResource{{ForeignID: authorID, Role: role}},
 	}
 }
 

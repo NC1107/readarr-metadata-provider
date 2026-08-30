@@ -27,6 +27,7 @@ const aliasesPerRequest = 5
 // Readarr forks display; this avoids paging Hardcover's ~33M edition rows.
 const bookFields = `
 	id
+	canonical_id
 	title
 	subtitle
 	description
@@ -52,8 +53,11 @@ const bookFields = `
 		release_date
 		pages
 		physical_format
+		edition_format
+		edition_information
+		audio_seconds
 		reading_format_id
-		language { code2 language }
+		language { code2 code3 language }
 		cached_image
 	}`
 

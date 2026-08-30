@@ -15,6 +15,7 @@ var errNotFound = errors.New("not found")
 // rawBook mirrors one row of the seeded books table's JSON payload.
 type rawBook struct {
 	ID           int64      `json:"id"`
+	CanonicalID  *int64     `json:"canonical_id"`
 	Title        string     `json:"title"`
 	Subtitle     string     `json:"subtitle"`
 	Description  string     `json:"description"`
@@ -61,22 +62,25 @@ func (c *cachedTags) UnmarshalJSON(b []byte) error {
 }
 
 type rawEdition struct {
-	ID          int64   `json:"id"`
-	Title       string  `json:"title"`
-	Subtitle    string  `json:"subtitle"`
-	ISBN13      string  `json:"isbn_13"`
-	ISBN10      string  `json:"isbn_10"`
-	ASIN        string  `json:"asin"`
-	UsersCount  int64   `json:"users_count"`
-	ReleaseDate string  `json:"release_date"`
-	Pages       int64   `json:"pages"`
-	Physical    string  `json:"physical_format"`
-	FormatID    int64   `json:"reading_format_id"`
-	Publisher   *struct {
+	ID            int64  `json:"id"`
+	Title         string `json:"title"`
+	Subtitle      string `json:"subtitle"`
+	ISBN13        string `json:"isbn_13"`
+	ISBN10        string `json:"isbn_10"`
+	ASIN          string `json:"asin"`
+	UsersCount    int64  `json:"users_count"`
+	ReleaseDate   string `json:"release_date"`
+	Pages         int64  `json:"pages"`
+	Physical      string `json:"physical_format"`
+	EditionFormat string `json:"edition_format"`
+	EditionInfo   string `json:"edition_information"`
+	FormatID      int64  `json:"reading_format_id"`
+	Publisher     *struct {
 		Name string `json:"name"`
 	} `json:"publisher"`
 	Language *struct {
 		Code2 string `json:"code2"`
+		Code3 string `json:"code3"`
 		Name  string `json:"language"`
 	} `json:"language"`
 	CachedImage struct {
@@ -249,6 +253,21 @@ func (s *store) searchWorks(query string, limit int) ([]int64, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// authorAggregates sums ratings across an author's linked works. It skips
+// the primary-author role filter for speed; the aggregate is display-only.
+func (s *store) authorAggregates(authorID int64) (count int64, avg float32) {
+	var sum float64
+	_ = s.db.QueryRow(`
+		SELECT COALESCE(SUM(json_extract(w.json, '$.ratings_count')), 0),
+			COALESCE(SUM(json_extract(w.json, '$.ratings_count') * json_extract(w.json, '$.rating')), 0)
+		FROM work_authors wa JOIN works w ON w.id = wa.work_id
+		WHERE wa.author_id = ?`, authorID).Scan(&count, &sum)
+	if count > 0 {
+		avg = float32(sum / float64(count))
+	}
+	return count, avg
 }
 
 func (s *store) topWorkIDs(limit, offset int) ([]int64, error) {

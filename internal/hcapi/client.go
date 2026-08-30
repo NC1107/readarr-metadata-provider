@@ -41,10 +41,10 @@ func WithDailyReserve(n int64) Option {
 
 func NewClient(token string, opts ...Option) *Client {
 	c := &Client{
-		http:         &http.Client{Timeout: 90 * time.Second},
-		token:        token,
-		minInterval:  time.Second, // 60/min
-		dailyReserve: 100,
+		http:           &http.Client{Timeout: 90 * time.Second},
+		token:          token,
+		minInterval:    time.Second, // 60/min
+		dailyReserve:   100,
 		dailyRemaining: -1, // unknown until first response
 	}
 	for _, o := range opts {

@@ -15,30 +15,38 @@ import (
 )
 
 type Server struct {
-	app      *app
-	maxWorks int
+	app          *app
+	maxWorks     int
+	officialBase string
 }
 
-func New(dbPath string, maxWorks int) (*Server, error) {
+func New(dbPath string, maxWorks int, officialBase string) (*Server, error) {
 	st, err := openStore(dbPath)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{app: &app{store: st}, maxWorks: maxWorks}, nil
+	if officialBase == "" {
+		officialBase = defaultOfficialBase
+	}
+	return &Server{app: &app{store: st}, maxWorks: maxWorks, officialBase: officialBase}, nil
 }
 
 func (s *Server) Handler() http.Handler {
+	api := http.NewServeMux()
+	api.HandleFunc("/search", s.search)
+	api.HandleFunc("/recommended", s.recommended)
+	api.HandleFunc("/work/{id}", s.getWork)
+	api.HandleFunc("/book/{id}", s.getBook)
+	api.HandleFunc("/book/asin/{asin}", s.getASIN)
+	api.HandleFunc("/book/isbn/{isbn}", s.getISBN)
+	api.HandleFunc("/book/bulk", s.bulkBook)
+	api.HandleFunc("/author/{id}", s.getAuthor)
+	api.HandleFunc("/author/changed", s.authorChanged)
+	api.HandleFunc("/series/{id}", s.getSeries)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/search", s.search)
-	mux.HandleFunc("/recommended", s.recommended)
-	mux.HandleFunc("/work/{id}", s.getWork)
-	mux.HandleFunc("/book/{id}", s.getBook)
-	mux.HandleFunc("/book/asin/{asin}", s.getASIN)
-	mux.HandleFunc("/book/isbn/{isbn}", s.getISBN)
-	mux.HandleFunc("/book/bulk", s.bulkBook)
-	mux.HandleFunc("/author/{id}", s.getAuthor)
-	mux.HandleFunc("/author/changed", s.authorChanged)
-	mux.HandleFunc("/series/{id}", s.getSeries)
+	mux.Handle("/", api)
+	s.mountUI(mux, api)
 	return logRequests(mux)
 }
 
@@ -150,6 +158,13 @@ func (s *Server) getWork(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
+	// Duplicate works carry a canonical_id; serve the canonical work like
+	// upstream does.
+	if b.CanonicalID != nil && *b.CanonicalID != 0 {
+		if canonical, err := s.app.store.work(*b.CanonicalID); err == nil {
+			b = canonical
+		}
+	}
 	work, err := s.app.workResource(b, 0, map[int64]*rawSeries{})
 	if err != nil {
 		s.error(w, err)
@@ -246,6 +261,7 @@ func (s *Server) getAuthor(w http.ResponseWriter, r *http.Request) {
 		}
 		author := work.Authors[0]
 		author.Works = []workResource{*work}
+		author.RatingCount, author.AverageRating = s.app.store.authorAggregates(author.ForeignID)
 		writeJSON(w, author)
 		return
 	}
