@@ -28,6 +28,67 @@ const maxDatasetBytes = 32 << 30
 // forever. The timeout covers the whole body, which is why it is generous.
 var client = &http.Client{Timeout: 2 * time.Hour}
 
+// digestPath is where the checksum of the installed artifact is recorded,
+// so a later check can tell whether the published dataset has moved on
+// without downloading gigabytes to find out.
+func digestPath(dbPath string) string { return dbPath + ".installed-sha256" }
+
+// InstalledDigest reports the checksum of the dataset currently on disk, or
+// an empty string when it is unknown (an older install, or a hand-placed
+// file). Unknown forces one update on the next check, which then records it.
+func InstalledDigest(dbPath string) string {
+	b, err := os.ReadFile(digestPath(dbPath))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// Update installs a newer published dataset when one exists, returning
+// whether it replaced the file. The comparison is a single small request for
+// the manifest, so calling this on a timer is cheap.
+func Update(ctx context.Context, dbPath, url string) (bool, error) {
+	if url == "" {
+		return false, nil
+	}
+	published := fetchChecksum(ctx, url)
+	if published == "" {
+		return false, fmt.Errorf("no published checksum at %s", url)
+	}
+	if published == InstalledDigest(dbPath) {
+		return false, nil
+	}
+
+	log.Printf("newer dataset published, downloading from %s", url)
+	start := time.Now()
+	tmp := dbPath + ".download"
+	os.Remove(tmp)
+	written, sum, err := download(ctx, url, tmp)
+	if err != nil {
+		os.Remove(tmp)
+		return false, err
+	}
+	if sum != published {
+		os.Remove(tmp)
+		return false, fmt.Errorf("checksum mismatch: expected %s, got %s", published, sum)
+	}
+	// Renaming over the served file is safe: an open database keeps reading
+	// the old inode until its connection is closed after the swap.
+	if err := os.Rename(tmp, dbPath); err != nil {
+		os.Remove(tmp)
+		return false, err
+	}
+	recordDigest(dbPath, sum)
+	log.Printf("dataset updated: %s (%s, %s)", dbPath, humanBytes(written), time.Since(start).Round(time.Second))
+	return true, nil
+}
+
+func recordDigest(dbPath, digest string) {
+	if err := os.WriteFile(digestPath(dbPath), []byte(digest+"\n"), 0o644); err != nil {
+		log.Printf("could not record dataset checksum: %v", err)
+	}
+}
+
 // Ensure guarantees a dataset exists at dbPath, downloading it from url
 // when it does not. An existing file is never touched, so a boot after the
 // first costs nothing.
@@ -67,6 +128,9 @@ func Ensure(ctx context.Context, dbPath, url string) error {
 	if err := os.Rename(tmp, dbPath); err != nil {
 		os.Remove(tmp)
 		return err
+	}
+	if want != "" {
+		recordDigest(dbPath, sum)
 	}
 	log.Printf("dataset ready: %s (%s, %s)", dbPath, humanBytes(written), time.Since(start).Round(time.Second))
 	return nil

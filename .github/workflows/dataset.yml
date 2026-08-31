@@ -6,13 +6,16 @@
 # mode, usually a few hundred queries), rebuilds the SQLite dataset, and
 # publishes it - so the full seed never has to run again, on CI or anywhere.
 #
+# Weekly is enough: servers check for a newer dataset every 6 hours, so a
+# publish reaches them the same day.
+#
 # Requires the HARDCOVER_TOKEN repository secret. Does nothing without it.
 name: dataset
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * 1,4" # twice a week, Monday and Thursday
+    - cron: "0 6 * * 1" # weekly, Monday
 
 permissions:
   contents: write

@@ -20,6 +20,9 @@ services:
       #
       # Pin a specific snapshot instead of the newest published one:
       # - DATASET_URL=https://github.com/NC1107/readarr-metadata-provider/releases/download/dataset-20260830/metadata.db.zst
+      # Check for a newer dataset on boot and this often after; 0 pins the
+      # one you have. New datasets are published weekly.
+      - DATASET_REFRESH=6h
       - SEARCH_MIN_RATINGS=5
       - SEARCH_LANGUAGES=en
 

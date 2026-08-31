@@ -125,3 +125,82 @@ func TestEnsureUncompressedArtifact(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, payload)
 	}
 }
+
+func TestUpdateSkipsWhenDigestMatches(t *testing.T) {
+	payload := []byte("current dataset")
+	srv := releaseServer(t, payload, false)
+	dst := filepath.Join(t.TempDir(), "metadata.db")
+
+	if err := Ensure(context.Background(), dst, srv.URL+"/metadata.db.zst"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := Update(context.Background(), dst, srv.URL+"/metadata.db.zst")
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated {
+		t.Fatal("re-downloaded a dataset that had not changed")
+	}
+	after, _ := os.Stat(dst)
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Error("unchanged dataset was rewritten")
+	}
+}
+
+func TestUpdateInstallsNewerDataset(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "metadata.db")
+
+	old := releaseServer(t, []byte("version one"), false)
+	if err := Ensure(context.Background(), dst, old.URL+"/metadata.db.zst"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second release standing in for a later publish.
+	next := releaseServer(t, []byte("version two, with more books"), false)
+	updated, err := Update(context.Background(), dst, next.URL+"/metadata.db.zst")
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !updated {
+		t.Fatal("did not install the newer dataset")
+	}
+	got, _ := os.ReadFile(dst)
+	if string(got) != "version two, with more books" {
+		t.Fatalf("served content is %q", got)
+	}
+	if InstalledDigest(dst) == "" {
+		t.Error("digest was not recorded, so the next check would download again")
+	}
+}
+
+func TestUpdateKeepsGoodDatasetOnBadChecksum(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "metadata.db")
+
+	good := releaseServer(t, []byte("known good"), false)
+	if err := Ensure(context.Background(), dst, good.URL+"/metadata.db.zst"); err != nil {
+		t.Fatal(err)
+	}
+
+	corrupt := releaseServer(t, []byte("corrupt"), true)
+	updated, err := Update(context.Background(), dst, corrupt.URL+"/metadata.db.zst")
+	if err == nil {
+		t.Fatal("expected a checksum error")
+	}
+	if updated {
+		t.Fatal("reported an update it did not make")
+	}
+	got, _ := os.ReadFile(dst)
+	if string(got) != "known good" {
+		t.Fatalf("a failed update replaced the working dataset: %q", got)
+	}
+	if _, err := os.Stat(dst + ".download"); !os.IsNotExist(err) {
+		t.Error("partial download was left behind")
+	}
+}

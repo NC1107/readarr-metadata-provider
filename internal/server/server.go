@@ -12,13 +12,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode"
 
 	"github.com/NC1107/readarr-metadata-provider/internal/hcapi"
 )
 
 type Server struct {
-	app          *app
+	// app is replaced wholesale when a newer dataset is installed; readers
+	// take it once per request and keep using it to the end.
+	app          atomic.Pointer[app]
 	maxWorks     int
 	officialBase string
 	hc           *hcapi.Client
@@ -91,7 +95,7 @@ func (s *Server) loadStats() {
 	if fi, err := os.Stat(s.dbPath); err == nil {
 		st.SizeBytes = fi.Size()
 	}
-	_ = s.app.store.db.QueryRow(`SELECT value FROM meta WHERE key = 'generated_at'`).Scan(&st.GeneratedAt)
+	_ = s.current().store.db.QueryRow(`SELECT value FROM meta WHERE key = 'generated_at'`).Scan(&st.GeneratedAt)
 	for _, c := range []struct {
 		table string
 		dst   *int64
@@ -99,7 +103,7 @@ func (s *Server) loadStats() {
 		{"works", &st.Works}, {"authors", &st.Authors},
 		{"series", &st.Series}, {"editions", &st.Editions},
 	} {
-		_ = s.app.store.db.QueryRow(`SELECT count(*) FROM ` + c.table).Scan(c.dst)
+		_ = s.current().store.db.QueryRow(`SELECT count(*) FROM ` + c.table).Scan(c.dst)
 	}
 	st.Ready = true
 	s.statsMu.Lock()
@@ -143,7 +147,6 @@ func New(cfg Config) (*Server, error) {
 		cfg.OfficialBase = defaultOfficialBase
 	}
 	s := &Server{
-		app:          &app{store: st},
 		maxWorks:     cfg.MaxWorks,
 		officialBase: cfg.OfficialBase,
 		metrics:      newMetrics(),
@@ -156,11 +159,32 @@ func New(cfg Config) (*Server, error) {
 			s.searchLangs[l] = true
 		}
 	}
+	s.app.Store(&app{store: st})
 	if cfg.HCToken != "" {
 		s.hc = hcapi.NewClient(cfg.HCToken)
 	}
 	go s.loadStats()
 	return s, nil
+}
+
+// current returns the app serving requests right now.
+func (s *Server) current() *app { return s.app.Load() }
+
+// Swap installs a freshly opened dataset and closes the previous one after a
+// grace window, which is far longer than any request takes, so nothing
+// in flight touches a closed database.
+func (s *Server) Swap(dbPath string) error {
+	st, err := openStore(dbPath)
+	if err != nil {
+		return err
+	}
+	old := s.app.Swap(&app{store: st})
+	s.dbPath = dbPath
+	go s.loadStats()
+	if old != nil && old.store != nil && old.store != st {
+		time.AfterFunc(30*time.Second, func() { _ = old.store.db.Close() })
+	}
+	return nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -238,20 +262,20 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	normalized := strings.ReplaceAll(query, "-", "")
 	switch {
 	case asinPattern.MatchString(query):
-		if editionID, err := s.app.store.editionByASIN(query); err == nil {
-			if workID, err := s.app.store.workIDForEdition(editionID); err == nil {
+		if editionID, err := s.current().store.editionByASIN(query); err == nil {
+			if workID, err := s.current().store.workIDForEdition(editionID); err == nil {
 				workIDs = []int64{workID}
 			}
 		}
 	case isbnPattern.MatchString(normalized):
-		if editionID, err := s.app.store.editionByISBN(strings.ToUpper(normalized)); err == nil {
-			if workID, err := s.app.store.workIDForEdition(editionID); err == nil {
+		if editionID, err := s.current().store.editionByISBN(strings.ToUpper(normalized)); err == nil {
+			if workID, err := s.current().store.workIDForEdition(editionID); err == nil {
 				workIDs = []int64{workID}
 			}
 		}
 	default:
 		var err error
-		workIDs, err = s.app.store.searchWorks(query, 30)
+		workIDs, err = s.current().store.searchWorks(query, 30)
 		if err != nil {
 			s.error(w, err)
 			return
@@ -261,7 +285,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	results := []searchResource{}
 	var belowCutoff []searchResource
 	for _, workID := range workIDs {
-		b, err := s.app.store.work(workID)
+		b, err := s.current().store.work(workID)
 		if err != nil {
 			continue
 		}
@@ -300,7 +324,7 @@ func (s *Server) getWork(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
-	b, err := s.app.store.work(id)
+	b, err := s.current().store.work(id)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -308,11 +332,11 @@ func (s *Server) getWork(w http.ResponseWriter, r *http.Request) {
 	// Duplicate works carry a canonical_id; serve the canonical work like
 	// upstream does.
 	if b.CanonicalID != nil && *b.CanonicalID != 0 {
-		if canonical, err := s.app.store.work(*b.CanonicalID); err == nil {
+		if canonical, err := s.current().store.work(*b.CanonicalID); err == nil {
 			b = canonical
 		}
 	}
-	work, err := s.app.workResource(b, 0, map[int64]*rawSeries{})
+	work, err := s.current().workResource(b, 0, map[int64]*rawSeries{})
 	if err != nil {
 		s.error(w, err)
 		return
@@ -331,12 +355,12 @@ func (s *Server) getBook(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
-	workID, err := s.app.store.workIDForEdition(editionID)
+	workID, err := s.current().store.workIDForEdition(editionID)
 	if err != nil {
 		s.error(w, err)
 		return
 	}
-	b, err := s.app.store.work(workID)
+	b, err := s.current().store.work(workID)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -351,7 +375,7 @@ func (s *Server) getBook(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getASIN(w http.ResponseWriter, r *http.Request) {
 	asin := strings.TrimSpace(r.PathValue("asin"))
-	editionID, err := s.app.store.editionByASIN(asin)
+	editionID, err := s.current().store.editionByASIN(asin)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -365,7 +389,7 @@ func (s *Server) getISBN(w http.ResponseWriter, r *http.Request) {
 		s.error(w, fmt.Errorf("%w: bad isbn", errNotFound))
 		return
 	}
-	editionID, err := s.app.store.editionByISBN(isbn)
+	editionID, err := s.current().store.editionByISBN(isbn)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -391,29 +415,29 @@ func (s *Server) getAuthor(w http.ResponseWriter, r *http.Request) {
 			s.error(w, fmt.Errorf("%w: bad edition %q", errNotFound, edition))
 			return
 		}
-		workID, err := s.app.store.workIDForEdition(editionID)
+		workID, err := s.current().store.workIDForEdition(editionID)
 		if err != nil {
 			s.error(w, err)
 			return
 		}
-		b, err := s.app.store.work(workID)
+		b, err := s.current().store.work(workID)
 		if err != nil {
 			s.error(w, err)
 			return
 		}
-		work, err := s.app.workResource(b, editionID, map[int64]*rawSeries{})
+		work, err := s.current().workResource(b, editionID, map[int64]*rawSeries{})
 		if err != nil {
 			s.error(w, err)
 			return
 		}
 		author := work.Authors[0]
 		author.Works = []workResource{*work}
-		author.RatingCount, author.AverageRating = s.app.store.authorAggregates(author.ForeignID)
+		author.RatingCount, author.AverageRating = s.current().store.authorAggregates(author.ForeignID)
 		writeJSON(w, author)
 		return
 	}
 
-	author, err := s.app.authorResource(id, s.maxWorks)
+	author, err := s.current().authorResource(id, s.maxWorks)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -436,12 +460,12 @@ func (s *Server) getSeries(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
-	sr, err := s.app.store.series(id)
+	sr, err := s.current().store.series(id)
 	if err != nil {
 		s.error(w, err)
 		return
 	}
-	links, err := s.app.store.seriesWorks(id, s.maxWorks)
+	links, err := s.current().store.seriesWorks(id, s.maxWorks)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -497,15 +521,15 @@ func (s *Server) bulkBook(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		workID, err := s.app.store.workIDForEdition(editionID)
+		workID, err := s.current().store.workIDForEdition(editionID)
 		if err != nil {
 			continue
 		}
-		b, err := s.app.store.work(workID)
+		b, err := s.current().store.work(workID)
 		if err != nil {
 			continue
 		}
-		work, err := s.app.workResource(b, editionID, seriesCache)
+		work, err := s.current().workResource(b, editionID, seriesCache)
 		if err != nil {
 			continue
 		}
@@ -549,7 +573,7 @@ func (s *Server) recommended(w http.ResponseWriter, r *http.Request) {
 		s.error(w, fmt.Errorf("%w: bad page", errNotFound))
 		return
 	}
-	ids, err := s.app.store.topWorkIDs(100, int(100*(page-1)))
+	ids, err := s.current().store.topWorkIDs(100, int(100*(page-1)))
 	if err != nil {
 		s.error(w, err)
 		return

@@ -363,7 +363,7 @@ func (u *uiServer) fetchHardcover(ctx context.Context, mode, query string) (res 
 
 	seriesCache := map[int64]*rawSeries{}
 	for _, b := range books {
-		w, err := u.server.app.workResource(&b, editionID, seriesCache)
+		w, err := u.server.current().workResource(&b, editionID, seriesCache)
 		if err != nil {
 			continue
 		}

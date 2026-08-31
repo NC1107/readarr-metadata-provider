@@ -23,7 +23,11 @@ docker compose up -d
 
 On first boot it downloads the dataset (1.1GB compressed, 6.6GB on disk), checks it against its published checksum, and serves it.
 No hardcover key needed, no seeding, no import step.
-After that it works offline.
+
+After that it keeps itself current. It checks for a newer dataset when it starts and every 6 hours after, and only downloads when the published checksum differs from what it already has, so a check that finds nothing costs one small request.
+A new dataset is verified before it replaces the old one and swapped in without dropping a request, so a failed or corrupt download leaves the working dataset alone.
+New datasets are published weekly.
+Set `DATASET_REFRESH=0` to pin the one you have; either way it serves offline once it has a dataset.
 
 ## What it needs
 
@@ -87,8 +91,8 @@ go build -o bin/serve ./cmd/serve
 ./bin/serve -db data/dataset/metadata.db -addr :8816
 ```
 
-Same as the container: if that file doesn't exist it downloads the published dataset first.
-Pass `-dataset-url ""` to turn that off, or point it at a specific snapshot.
+Same as the container: if that file doesn't exist it downloads the published dataset first, then checks for a newer one every 6 hours (`-dataset-refresh`, `0` disables).
+Pass `-dataset-url ""` to stop it downloading at all, or point it at a specific snapshot to pin that one.
 
 ## Comparing it against the public service
 
