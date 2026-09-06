@@ -285,11 +285,17 @@ func (s *store) editionByASIN(asin string) (int64, error) {
 }
 
 // authorWorkIDs returns the author's works, most popular first.
+// authorWorkIDs lists the works a person wrote, most popular first. Only
+// authorship credits count: a translation, narration or introduction credit
+// would otherwise put somebody else's book at the top of a search for this
+// author's name, which is the exact ranking failure this project set out to
+// avoid. The role test matches bestAuthorID.
 func (s *store) authorWorkIDs(authorID int64, limit int) ([]int64, error) {
 	rows, err := s.db.Query(`
 		SELECT w.id FROM work_authors wa
 		JOIN works w ON w.id = wa.work_id
 		WHERE wa.author_id = ?
+		  AND (wa.role IS NULL OR lower(trim(wa.role)) IN ('', 'author', 'author/narrator'))
 		ORDER BY w.ratings_count DESC, w.id
 		LIMIT ?`, authorID, limit)
 	if err != nil {
