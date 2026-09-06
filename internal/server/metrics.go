@@ -39,16 +39,34 @@ func newMetrics() *metrics {
 	return &metrics{start: time.Now(), byRoute: map[string]int64{}}
 }
 
-func (m *metrics) record(method, path string, status int, ms int64) {
+// knownRoutes is the fixed set of per-route counters. Anything else a
+// scanner asks for is bucketed as "other", so the map cannot grow without
+// bound.
+var knownRoutes = map[string]bool{
+	"search": true, "recommended": true, "work": true, "book": true,
+	"author": true, "series": true,
+}
+
+func routeOf(path string) string {
 	route := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)[0]
 	if i := strings.IndexByte(route, '?'); i >= 0 {
 		route = route[:i]
 	}
+	if !knownRoutes[route] {
+		return "other"
+	}
+	return route
+}
+
+func (m *metrics) record(method, path string, status int, ms int64) {
+	route := routeOf(path)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.total++
 	m.totalMs += ms
-	if status >= 400 {
+	// A 404 is a correct answer about something the dataset does not have;
+	// only a 5xx is the server failing.
+	if status >= 500 {
 		m.errors++
 	}
 	m.byRoute[route]++

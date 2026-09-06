@@ -20,8 +20,13 @@ import (
 )
 
 type State struct {
-	MaxID     int64        `json:"max_id"`
-	NextStart int64        `json:"next_start"`
+	MaxID     int64 `json:"max_id"`
+	NextStart int64 `json:"next_start"`
+	// StartedAt is when the seed first began. The first delta starts from
+	// here rather than from SeededAt: a seed takes days on the free tier,
+	// and a row updated after its range was fetched but before the seed
+	// finished would otherwise never be fetched again.
+	StartedAt string       `json:"started_at,omitempty"`
 	SeededAt  string       `json:"seeded_at,omitempty"`
 	Delta     *DeltaCursor `json:"delta_cursor,omitempty"`
 }
@@ -48,6 +53,7 @@ func (s *Seeder) Seed(ctx context.Context, spec EntitySpec) error {
 			return err
 		}
 		state.NextStart = 0
+		state.StartedAt = time.Now().UTC().Format(time.RFC3339)
 		log.Printf("%s: max id %d", spec.Name, state.MaxID)
 	}
 	if state.NextStart > state.MaxID {
@@ -114,7 +120,11 @@ func (s *Seeder) Delta(ctx context.Context, spec EntitySpec) error {
 		if state.SeededAt == "" {
 			return fmt.Errorf("%s: no completed seed to delta from", spec.Name)
 		}
-		cursor = &DeltaCursor{UpdatedAt: state.SeededAt}
+		since := state.StartedAt
+		if since == "" {
+			since = state.SeededAt
+		}
+		cursor = &DeltaCursor{UpdatedAt: since}
 	}
 
 	rawDir := filepath.Join(s.DataDir, "raw", spec.Name+"-delta")

@@ -116,16 +116,22 @@ func (u *uiServer) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func modePath(mode, query string) (string, error) {
-	id := strings.TrimSpace(query)
-	switch mode {
-	case "search", "":
+	if mode == "search" || mode == "" {
 		return "/search?q=" + url.QueryEscape(query), nil
+	}
+	// Every other mode addresses a row by numeric id. Checking here keeps
+	// arbitrary visitor text out of the paths sent to the upstream service.
+	id, err := strconv.ParseInt(strings.TrimSpace(query), 10, 64)
+	if err != nil || id <= 0 {
+		return "", fmt.Errorf("%q is not an id", query)
+	}
+	switch mode {
 	case "work":
-		return "/work/" + id, nil
+		return fmt.Sprintf("/work/%d", id), nil
 	case "author":
-		return "/author/" + id, nil
+		return fmt.Sprintf("/author/%d", id), nil
 	case "book":
-		return "/book/" + id, nil
+		return fmt.Sprintf("/book/%d", id), nil
 	default:
 		return "", fmt.Errorf("unknown mode %q", mode)
 	}

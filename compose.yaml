@@ -14,17 +14,25 @@ services:
       # serves it; after that it works offline.
       - readarr-metadata:/data
     environment:
-      # Set a HARDCOVER_TOKEN to enable the /ui console's live hardcover
-      # comparison column. Serving does not need one.
-      # - HARDCOVER_TOKEN=hc_pat_...
+      # Check for a newer dataset on boot and this often after; 0 pins the
+      # one you have. New datasets are published weekly. A refresh needs room
+      # for a second copy of the dataset while the new one downloads.
+      - RMP_DATASET_REFRESH=6h
+      - RMP_SEARCH_MIN_RATINGS=5
+      - RMP_SEARCH_LANGUAGES=en
       #
       # Pin a specific snapshot instead of the newest published one:
-      # - DATASET_URL=https://github.com/NC1107/readarr-metadata-provider/releases/download/dataset-20260830/metadata.db.zst
-      # Check for a newer dataset on boot and this often after; 0 pins the
-      # one you have. New datasets are published weekly.
-      - DATASET_REFRESH=6h
-      - SEARCH_MIN_RATINGS=5
-      - SEARCH_LANGUAGES=en
+      # - RMP_DATASET_URL=https://github.com/NC1107/readarr-metadata-provider/releases/download/dataset-20260830/metadata.db.zst
+      #
+      # The side-by-side comparison console at /ui. Off by default: it is
+      # unauthenticated and queries the public rreading-glasses instance (and
+      # hardcover, with a token) on a visitor's behalf, so only turn it on
+      # where nobody else can reach the port.
+      # - RMP_WEB=true
+      # - HARDCOVER_TOKEN=hc_pat_...
+      #
+      # Every flag has an RMP_ environment variable (RMP_ADDR, RMP_MAX_WORKS,
+      # ...); see README.md. The older unprefixed names still work.
 
 volumes:
   readarr-metadata:

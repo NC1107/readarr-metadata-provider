@@ -21,13 +21,14 @@ cd readarr-metadata-provider
 docker compose up -d
 ```
 
-On first boot it downloads the dataset (1.1GB compressed, 6.6GB on disk), checks it against its published checksum, and serves it.
+On first boot it downloads the dataset (1.1GB compressed, 6.6GB on disk), checks it against its published checksum, test-opens it, and serves it.
 No hardcover key needed, no seeding, no import step.
 
 After that it keeps itself current. It checks for a newer dataset when it starts and every 6 hours after, and only downloads when the published checksum differs from what it already has, so a check that finds nothing costs one small request.
-A new dataset is verified before it replaces the old one and swapped in without dropping a request, so a failed or corrupt download leaves the working dataset alone.
+A new dataset is verified and test-opened before it replaces the old one, and swapped in without dropping a request, so a failed or corrupt download leaves the working dataset alone.
 New datasets are published weekly.
-Set `DATASET_REFRESH=0` to pin the one you have; either way it serves offline once it has a dataset.
+Set `RMP_DATASET_REFRESH=0` to pin the one you have; either way it serves offline once it has a dataset.
+A dataset you built yourself, or copied into place by hand, is never replaced: the updater only touches files it installed.
 
 ## What it needs
 
@@ -35,7 +36,7 @@ Measured on the real dataset, not estimated:
 
 | | |
 |---|---|
-| Disk | 7GB (the 6.6GB dataset, streamed straight to its final file, nothing else kept) |
+| Disk | 7GB to run (the 6.6GB dataset, streamed straight to its final file). A refresh downloads the new dataset beside the old one, which keeps serving until the new one is verified, so leave room for two (about 14GB) if you keep updates on |
 | RAM, idle | ~10MB |
 | RAM, normal searches | ~15MB |
 | RAM, after a misspelled search | ~130MB (loads the author-name table once, for typo correction) |
@@ -56,7 +57,7 @@ The metadata source has no field in the UI, so `switch.sh` sets it through the R
 ```
 
 Your API key is under Settings > General > Security.
-Run it again with `--revert` to go back.
+Run it again with `--revert` to clear the setting. Readarr's original service no longer exists, so that only helps on a fork that ships its own default.
 
 ## Building the dataset yourself
 
@@ -84,6 +85,8 @@ go build -o bin/build ./cmd/build
 ./bin/build   # data/raw -> data/dataset/metadata.db, about 6GB
 ```
 
+The builder marks its output as locally built, so a server with automatic updates on serves it and leaves it alone rather than replacing it with the published snapshot.
+
 ## Running the server
 
 ```sh
@@ -94,9 +97,26 @@ go build -o bin/serve ./cmd/serve
 Same as the container: if that file doesn't exist it downloads the published dataset first, then checks for a newer one every 6 hours (`-dataset-refresh`, `0` disables).
 Pass `-dataset-url ""` to stop it downloading at all, or point it at a specific snapshot to pin that one.
 
+### Flags
+
+Every flag can also be set from the environment as `RMP_` plus the flag name in upper case with dashes as underscores (`RMP_DATASET_URL`, `RMP_WEB`, ...), or in a `.env` file in the working directory (`/data` in the container). A flag on the command line wins. The older unprefixed names (`DATASET_URL`, `DATASET_REFRESH`, `SEARCH_LANGUAGES`, `SEARCH_MIN_RATINGS`) still work. A value that doesn't parse refuses to start rather than silently running with the default.
+
+- `-db` (default `data/dataset/metadata.db`, `/data/metadata.db` in the container) - the dataset file to serve.
+- `-addr` (default `:8816`) - the address it listens on.
+- `-dataset-url` - where to download the dataset from when `-db` doesn't exist. Defaults to the latest github release; empty disables downloading. A `manifest.txt` with sha256 lines must be published beside it, since a download that can't be verified isn't installed. Use https; plain http gets a warning.
+- `-dataset-refresh` (default `6h`) - how often to check `dataset-url` for a newer dataset and swap it in, live. `0` disables. A refresh needs room for a second copy of the dataset while it downloads.
+- `-max-works` (default `2000`) - the most works one author or series page returns. Bookshelf handles the full count; the cap keeps a pathological author from producing a hundred-megabyte page.
+- `-search-languages` (default `en`) - comma-separated edition language codes search results may have. Empty disables the filter. A query in non-Latin script bypasses it.
+- `-min-ratings` (default `5`) - drop search results with fewer ratings than this, unless that would leave nothing.
+- `-web` - turns on the `/ui` comparison console (below). Off by default: it is unauthenticated and makes the server query the public rreading-glasses instance, and hardcover if a token is set, on a visitor's behalf, so keep it off on a port other people can reach.
+- `-official` - the reference service the console compares against. Defaults to the public rreading-glasses hardcover instance.
+- `HARDCOVER_TOKEN` (environment only) - adds a live hardcover column to the console. Serving never needs it.
+
+`GET /healthz` runs a real lookup against the served dataset and answers 200 or 503, which is what the container's healthcheck and any orchestrator probe should use. `GET /` reports the version and dataset counts.
+
 ## Comparing it against the public service
 
-There's a side-by-side console at http://localhost:8816/ui if you want to see how the data stacks up.
+There's a side-by-side console at http://localhost:8816/ui, when the server runs with `-web`, if you want to see how the data stacks up.
 You type a query and it runs against this server and the public rreading-glasses instance at once, shows latency, payload size, result rankings, and flags any response keys readarr wouldn't recognize.
 
 `cmd/parity` does the same from the command line: search ranking agreement over a set of queries, or `-deep` for field-by-field comparison of known works.
@@ -110,5 +130,12 @@ The server is a single go binary with sqlite opened read only, search runs on FT
 Author pages, the thing that famously choked readarr's original service, assemble in single-digit milliseconds for normal authors and about half a second for the worst author in the entire dataset.
 Editions are capped at the 20 most-shelved per book, same as rreading-glasses does, which is what keeps the dataset a sane size.
 
-Planned next: published dataset snapshots on github releases so nobody has to seed their own, a docker image, and delta sync automation.
-See PLAN.md for the longer version.
+A dataset update downloads beside the live file, is checked against its published checksum and opened once to prove it serves, and only then replaces the file. The database that was serving keeps the file handles it already had, so requests in flight finish on the dataset they started on, and the new one takes over for everything after.
+
+Datasets are rebuilt weekly on github actions from a delta sync against hardcover, smoke-tested, and attached to a release. PLAN.md has the design notes and what changed along the way.
+
+## License and data
+
+GPL-3.0, see LICENSE. The API shapes follow [rreading-glasses](https://github.com/blampe/rreading-glasses) (MIT) as a behavioural reference; none of its code is reused.
+
+Book data comes from [hardcover](https://hardcover.app) via their API. Hardcover asserts no proprietary rights over the database and asks for attribution on aggregate data, so: the dataset carries only catalogue data and aggregate ratings, no user-owned content (reviews, lists, shelves), and cover images are linked from hardcover's CDN rather than redistributed. If you publish anything built on this dataset, credit hardcover. Takedown requests for catalogue data should go to hardcover; for anything specific to this project, open an issue.
