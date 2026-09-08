@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes a run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Format
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would change:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      # go.mod and go.sum drift silently when a dependency is added without
+      # tidying; a stale file breaks the next contributor's build.
+      - name: Tidy
+        run: |
+          go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "go.mod or go.sum is not tidy: run go mod tidy"; exit 1
+          fi
+
+      # A go.mod tool dependency, so the version and hashes are locked by
+      # go.sum like any other dependency; bump with go get -tool.
+      - name: Vulnerabilities
+        run: go tool govulncheck ./...
+
+      # The race detector matters here: the dataset is swapped under live
+      # requests, and a race there means a wrong answer to Readarr rather
+      # than a crash.
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        run: go build ./...
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t readarr-metadata-provider:ci .
+      # The image is useless if it cannot refuse cleanly, and that path is
+      # what a user hits first when their dataset has not downloaded yet.
+      - name: Container refuses without a source
+        run: |
+          if docker run --rm readarr-metadata-provider:ci -db /nonexistent.db -dataset-url ""; then
+            echo "expected the container to refuse to start"; exit 1
+          fi

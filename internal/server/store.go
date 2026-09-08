@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -8,9 +9,11 @@ import (
 	"log"
 	"math"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/NC1107/readarr-metadata-provider/internal/textnorm"
 	_ "modernc.org/sqlite"
@@ -124,19 +127,104 @@ type fuzzyName struct {
 	norm string
 }
 
+// openStore opens a dataset read-only with a pinned connection pool.
+//
+// Pinned means every connection the pool will ever use is opened now and
+// none is closed for being idle. That is what makes a live update safe: the
+// updater installs a new file by renaming it over this path, and
+// database/sql opens connections by path, so a pool that reopened an idle
+// connection after the rename would start reading the new file through a
+// store built for the old one. With the pool pinned, each connection keeps
+// the inode it opened until the store is closed.
+//
+// immutable=1 tells SQLite the file cannot change underneath it, which is
+// true here (it is only ever replaced, never written) and removes locking.
 func openStore(path string) (*store, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&immutable=1")
 	if err != nil {
 		return nil, err
 	}
-	if err := db.Ping(); err != nil {
-		return nil, err
+	n := poolSize()
+	db.SetMaxOpenConns(n)
+	db.SetMaxIdleConns(n)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
+	if err := prewarm(db, n); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("opening %s: %w", path, err)
+	}
+	// A file that opens but has none of the tables is not a dataset: an
+	// empty or truncated download must be refused here, not discovered one
+	// 500 at a time.
+	for _, table := range []string{"works", "authors", "editions", "series"} {
+		var name string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("%s is not a dataset: missing table %s", path, table)
+		}
 	}
 	s := &store{db: db}
-	var n int
-	_ = db.QueryRow(`SELECT count(*) FROM pragma_table_info('authors') WHERE name = 'norm_name'`).Scan(&n)
-	s.hasNormName = n > 0
+	var c int
+	_ = db.QueryRow(`SELECT count(*) FROM pragma_table_info('authors') WHERE name = 'norm_name'`).Scan(&c)
+	s.hasNormName = c > 0
 	return s, nil
+}
+
+// maxPoolSize caps the handles a store holds open, so a large machine does
+// not pin hundreds it will never use at once.
+const maxPoolSize = 32
+
+func poolSize() int {
+	n := runtime.NumCPU() * 4
+	if n > maxPoolSize {
+		n = maxPoolSize
+	}
+	if n < 2 {
+		n = 2
+	}
+	return n
+}
+
+// prewarm opens every connection the pool may use (see openStore).
+func prewarm(db *sql.DB, n int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conns := make([]*sql.Conn, 0, n)
+	defer func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	}()
+	for i := 0; i < n; i++ {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		if err := c.PingContext(ctx); err != nil {
+			c.Close()
+			return err
+		}
+		conns = append(conns, c)
+	}
+	return nil
+}
+
+// probe answers whether the dataset can actually serve: it reads one work
+// row and decodes it, which exercises the file, the pool and the JSON
+// payloads together.
+func (s *store) probe(ctx context.Context) error {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM works LIMIT 1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("dataset has no works")
+	}
+	if err != nil {
+		return fmt.Errorf("probe: %w", err)
+	}
+	if _, err := s.work(id); err != nil {
+		return fmt.Errorf("probe: %w", err)
+	}
+	return nil
 }
 
 func getJSON[T any](s *store, query string, id int64) (*T, error) {
@@ -196,12 +284,17 @@ func (s *store) editionByASIN(asin string) (int64, error) {
 	return id, err
 }
 
-// authorWorkIDs returns the author's works, most popular first.
+// authorWorkIDs lists the works a person wrote, most popular first. Only
+// authorship credits count: a translation, narration or introduction credit
+// would otherwise put somebody else's book at the top of a search for this
+// author's name, which is the exact ranking failure this project set out to
+// avoid. The role test matches bestAuthorID.
 func (s *store) authorWorkIDs(authorID int64, limit int) ([]int64, error) {
 	rows, err := s.db.Query(`
 		SELECT w.id FROM work_authors wa
 		JOIN works w ON w.id = wa.work_id
 		WHERE wa.author_id = ?
+		  AND (wa.role IS NULL OR lower(trim(wa.role)) IN ('', 'author', 'author/narrator'))
 		ORDER BY w.ratings_count DESC, w.id
 		LIMIT ?`, authorID, limit)
 	if err != nil {
@@ -579,6 +672,14 @@ func (s *store) topWorkIDs(limit, offset int) ([]int64, error) {
 // ftsQuery converts free text into a safe FTS5 match expression: each token
 // quoted (implicit AND), with a prefix match on the final token.
 func ftsQuery(q string) string {
+	// Control characters are not searchable and a NUL inside a quoted term
+	// is a syntax error to FTS5 rather than a miss.
+	q = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, q)
 	fields := strings.Fields(q)
 	if len(fields) == 0 {
 		return ""

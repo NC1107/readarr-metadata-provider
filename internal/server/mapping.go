@@ -99,6 +99,8 @@ func orNA(s string) string {
 // app assembles API resources from the store.
 type app struct {
 	store *store
+	// path is where store was opened from, for the status view.
+	path string
 }
 
 // workResource builds the full response for one work as seen through one

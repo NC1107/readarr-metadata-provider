@@ -12,7 +12,7 @@ COPY . .
 ARG VERSION=0.0.0-dev
 # CGO stays off so the result is a static binary that runs on a small base.
 # modernc.org/sqlite is pure Go precisely so this holds.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/serve ./cmd/serve && \
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/serve ./cmd/serve && \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/build ./cmd/build && \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/seed ./cmd/seed
 
@@ -37,10 +37,18 @@ USER readarr
 
 EXPOSE 8816
 
+# Every flag can be set from the environment (RMP_ADDR, RMP_DATASET_URL, ...)
+# so a compose file never has to restate the command.
+ENV RMP_DB=/data/metadata.db
+
 # Readarr treats metadata failures as transient and retries, so an unhealthy
 # container that keeps answering is worse than one that reports itself down.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -q -O /dev/null http://127.0.0.1:8816/author/changed || exit 1
+# /healthz runs a real lookup against the served dataset, so "healthy" means
+# "can answer Readarr" rather than "process exists". The start period covers
+# a slow first open; the first-boot download happens before the server
+# listens, and Docker does not fail a container for an unhealthy start period.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:8816/healthz || exit 1
 
 ENTRYPOINT ["readarr-metadata-provider"]
 CMD ["-addr", ":8816", "-db", "/data/metadata.db"]
