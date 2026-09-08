@@ -82,17 +82,26 @@ jobs:
           for i in $(seq 60); do
             curl -fsS http://127.0.0.1:8816/ | grep -q '"ready":true' && break || sleep 2
           done
-          curl -fsS http://127.0.0.1:8816/ | tee /dev/stderr | python3 -c '
-          import json, sys
-          d = json.load(sys.stdin)["dataset"]
+          # Responses are saved and parsed as files rather than piped into
+          # the interpreter, and only ever come from the server started above.
+          curl -fsS -o info.json http://127.0.0.1:8816/
+          cat info.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("info.json"))["dataset"]
           # A floor on the totals catches a build that emitted far too few
           # rows (a silently dropped table) even though it opens and serves.
           assert d["works"] > 2_000_000, f"too few works: {d}"
           assert d["authors"] > 1_000_000, f"too few authors: {d}"
-          print("floor check ok:", d)'
-          curl -fsS "http://127.0.0.1:8816/search?q=the+name+of+the+wind" | python3 -c '
-          import json, sys
-          r = json.load(sys.stdin); assert r, "search returned nothing"; print("search ok:", len(r), "results")'
+          print("floor check ok:", d)
+          PY
+          curl -fsS -o search.json "http://127.0.0.1:8816/search?q=the+name+of+the+wind"
+          python3 - <<'PY'
+          import json
+          r = json.load(open("search.json"))
+          assert r, "search returned nothing"
+          print("search ok:", len(r), "results")
+          PY
           kill %1
 
       - name: Package

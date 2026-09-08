@@ -59,7 +59,8 @@ Backward compatibility with old Goodreads-ID Readarr databases is explicitly out
 ### Phase 0: Hardcover relations and licensing hygiene
 
 - Hardcover's policy states they assert no proprietary rights over the database, personal projects may use API data freely, but user-owned data may not be used in public products and aggregate data requires attribution.
-- Therefore: exclude all user-owned content (reviews, lists, user shelves), include aggregate ratings with Hardcover attribution, hotlink images from `assets.hardcover.app` with a link back rather than redistributing image files, and add a DMCA contact note to the README. (Done: see "License and data" in the README.)
+- Therefore: exclude all user-owned content (reviews, lists, user shelves), include aggregate ratings with Hardcover attribution, hotlink images from `assets.hardcover.app` with a link back rather than redistributing image files, and add a DMCA contact note to the README.
+  (Done: see "License and data" in the README.)
 - Reach out to Hardcover (Discord/email) about publishing periodic dataset snapshots.
   They cooperate with rreading-glasses already, and our model reduces their API load rather than adding to it.
   Not a hard blocker, but do it early.
@@ -84,9 +85,11 @@ work is listed under "Next" at the end.
 
 - Single binary, SQLite opened read-only, serves the contract above. (No response compression: the payloads are small apart from author pages, and Readarr talks to it over a LAN.)
 - Search ranking: `bm25(search, 10, 5, 3) - 2*ln(1 + ratings_count)`, validated to surface canonical works above Hardcover's zero-shelf duplicate imports.
-- `/author/changed` answers `Limited: true` with no ids, which tells Readarr to do a normal refresh. Serving real change lists from stored `updated_at` values is still open.
+- `/author/changed` answers `Limited: true` with no ids, which tells Readarr to do a normal refresh.
+  Serving real change lists from stored `updated_at` values is still open.
 - Optional live fallback (off by default): if the user supplies their own Hardcover token, cache-miss lookups for brand-new books hit Hardcover one item at a time and persist to a writable overlay DB.
-  This keeps per-user API usage near zero, well inside the free 5k/day tier. Not built.
+  This keeps per-user API usage near zero, well inside the free 5k/day tier.
+  Not built.
 
 ### Phase 4: Distribution and automation - mostly done
 
@@ -123,10 +126,7 @@ work is listed under "Next" at the end.
 - `/author/changed` from stored `updated_at` values.
 - Skip the weekly rebuild when the delta sync fetched nothing.
 
-Done since this plan was written: the container image on ghcr (`bb24601`),
-dataset auto-refresh with a verified, test-opened swap (`846141a` and after),
-a CI workflow, `/healthz`, split-artifact support in the downloader, and
-tests across the server.
+Done since this plan was written: the container image on ghcr (`bb24601`), dataset auto-refresh with a verified, test-opened swap (`846141a` and after), a CI workflow, `/healthz`, split-artifact support in the downloader, and tests across the server.
 
 ## Security note
 

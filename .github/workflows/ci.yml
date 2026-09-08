@@ -43,10 +43,10 @@ jobs:
             echo "go.mod or go.sum is not tidy: run go mod tidy"; exit 1
           fi
 
+      # A go.mod tool dependency, so the version and hashes are locked by
+      # go.sum like any other dependency; bump with go get -tool.
       - name: Vulnerabilities
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+        run: go tool govulncheck ./...
 
       # The race detector matters here: the dataset is swapped under live
       # requests, and a race there means a wrong answer to Readarr rather

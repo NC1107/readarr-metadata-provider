@@ -57,7 +57,8 @@ The metadata source has no field in the UI, so `switch.sh` sets it through the R
 ```
 
 Your API key is under Settings > General > Security.
-Run it again with `--revert` to clear the setting. Readarr's original service no longer exists, so that only helps on a fork that ships its own default.
+Run it again with `--revert` to clear the setting.
+Readarr's original service no longer exists, so that only helps on a fork that ships its own default.
 
 ## Building the dataset yourself
 
@@ -99,7 +100,10 @@ Pass `-dataset-url ""` to stop it downloading at all, or point it at a specific 
 
 ### Flags
 
-Every flag can also be set from the environment as `RMP_` plus the flag name in upper case with dashes as underscores (`RMP_DATASET_URL`, `RMP_WEB`, ...), or in a `.env` file in the working directory (`/data` in the container). A flag on the command line wins. The older unprefixed names (`DATASET_URL`, `DATASET_REFRESH`, `SEARCH_LANGUAGES`, `SEARCH_MIN_RATINGS`) still work. A value that doesn't parse refuses to start rather than silently running with the default.
+Every flag can also be set from the environment as `RMP_` plus the flag name in upper case with dashes as underscores (`RMP_DATASET_URL`, `RMP_WEB`, ...), or in a `.env` file in the working directory (`/data` in the container).
+A flag on the command line wins.
+The older unprefixed names (`DATASET_URL`, `DATASET_REFRESH`, `SEARCH_LANGUAGES`, `SEARCH_MIN_RATINGS`) still work.
+A value that doesn't parse refuses to start rather than silently running with the default.
 
 - `-db` (default `data/dataset/metadata.db`, `/data/metadata.db` in the container) - the dataset file to serve.
 - `-addr` (default `:8816`) - the address it listens on.
@@ -138,4 +142,7 @@ Datasets are rebuilt weekly on github actions from a delta sync against hardcove
 
 GPL-3.0, see LICENSE. The API shapes follow [rreading-glasses](https://github.com/blampe/rreading-glasses) (MIT) as a behavioural reference; none of its code is reused.
 
-Book data comes from [hardcover](https://hardcover.app) via their API. Hardcover asserts no proprietary rights over the database and asks for attribution on aggregate data, so: the dataset carries only catalogue data and aggregate ratings, no user-owned content (reviews, lists, shelves), and cover images are linked from hardcover's CDN rather than redistributed. If you publish anything built on this dataset, credit hardcover. Takedown requests for catalogue data should go to hardcover; for anything specific to this project, open an issue.
+Book data comes from [hardcover](https://hardcover.app) via their API.
+Hardcover asserts no proprietary rights over the database and asks for attribution on aggregate data, so: the dataset carries only catalogue data and aggregate ratings, no user-owned content (reviews, lists, shelves), and cover images are linked from hardcover's CDN rather than redistributed.
+If you publish anything built on this dataset, credit hardcover.
+Takedown requests for catalogue data should go to hardcover; for anything specific to this project, open an issue.

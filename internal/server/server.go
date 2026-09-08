@@ -112,15 +112,12 @@ func (s *Server) loadStats(a *app) {
 		st.SizeBytes = fi.Size()
 	}
 	_ = a.store.db.QueryRow(`SELECT value FROM meta WHERE key = 'generated_at'`).Scan(&st.GeneratedAt)
-	for _, c := range []struct {
-		table string
-		dst   *int64
-	}{
-		{"works", &st.Works}, {"authors", &st.Authors},
-		{"series", &st.Series}, {"editions", &st.Editions},
-	} {
-		_ = a.store.db.QueryRow(`SELECT count(*) FROM ` + c.table).Scan(c.dst)
-	}
+	_ = a.store.db.QueryRow(`SELECT
+		(SELECT count(*) FROM works),
+		(SELECT count(*) FROM authors),
+		(SELECT count(*) FROM series),
+		(SELECT count(*) FROM editions)`).
+		Scan(&st.Works, &st.Authors, &st.Series, &st.Editions)
 	st.Ready = true
 	if s.current() != a {
 		return
