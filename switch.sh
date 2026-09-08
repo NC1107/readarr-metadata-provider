@@ -14,10 +14,11 @@ Usage:
   switch.sh --readarr <url> --api-key <key> --show
 
 Options:
-  --readarr    Readarr's base URL, for example http://localhost:8787
+  --readarr   Readarr's base URL, for example http://localhost:8787
   --api-key   Readarr API key, from Settings > General > Security (works for Readarr and Bookshelf alike)
   --to        Metadata server to use, for example http://localhost:8816/
-  --revert    Go back to the official cloud service
+  --revert    Clear the setting (Readarr's original cloud service is gone;
+              this is only useful for a fork that ships its own default)
   --show      Print the current setting and change nothing
   --force     Skip the check that the new server actually answers
 
@@ -74,7 +75,7 @@ fi
 describe() {
     local value="$1"
     if [ -z "$value" ] || [ "$value" = "null" ]; then
-        echo "the official cloud service (api.readarr.audio)"
+        echo "the default (Readarr's original service, which no longer exists)"
     else
         echo "$value"
     fi

@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,11 +25,12 @@ type Server struct {
 	// app is replaced wholesale when a newer dataset is installed; readers
 	// take it once per request and keep using it to the end.
 	app          atomic.Pointer[app]
+	version      string
 	maxWorks     int
 	officialBase string
 	hc           *hcapi.Client
 	metrics      *metrics
-	dbPath       string
+	webUI        bool
 	searchLangs  map[string]bool
 	minRatings   int64
 
@@ -42,10 +45,8 @@ func (s *Server) langAllowed(b *rawBook, query string) bool {
 	if len(s.searchLangs) == 0 {
 		return true
 	}
-	for _, r := range query {
-		if r > 127 {
-			return true
-		}
+	if !latinScript(query) {
+		return true
 	}
 	// Any edition in an allowed language keeps the work: a book whose
 	// most-shelved edition happens to be a translation is still the book
@@ -78,6 +79,18 @@ func (s *Server) langAllowed(b *rawBook, query string) bool {
 	return letters == 0 || latin*2 >= letters
 }
 
+// latinScript reports whether every letter in s is Latin. Accented Latin
+// ("Misérables") counts as Latin; a query in Cyrillic, Han or Arabic does
+// not, and is what the language filter must step aside for.
+func latinScript(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) && !unicode.Is(unicode.Latin, r) {
+			return false
+		}
+	}
+	return true
+}
+
 // datasetStats is filled in the background at startup; count queries over
 // millions of rows are too slow for the request path.
 type datasetStats struct {
@@ -90,12 +103,15 @@ type datasetStats struct {
 	SizeBytes   int64  `json:"sizeBytes"`
 }
 
-func (s *Server) loadStats() {
+// loadStats counts the dataset behind a; it is given the app rather than
+// reading the current one so a swap mid-count cannot mix two datasets, and
+// a count that finishes after a later swap is discarded.
+func (s *Server) loadStats(a *app) {
 	var st datasetStats
-	if fi, err := os.Stat(s.dbPath); err == nil {
+	if fi, err := os.Stat(a.path); err == nil {
 		st.SizeBytes = fi.Size()
 	}
-	_ = s.current().store.db.QueryRow(`SELECT value FROM meta WHERE key = 'generated_at'`).Scan(&st.GeneratedAt)
+	_ = a.store.db.QueryRow(`SELECT value FROM meta WHERE key = 'generated_at'`).Scan(&st.GeneratedAt)
 	for _, c := range []struct {
 		table string
 		dst   *int64
@@ -103,9 +119,12 @@ func (s *Server) loadStats() {
 		{"works", &st.Works}, {"authors", &st.Authors},
 		{"series", &st.Series}, {"editions", &st.Editions},
 	} {
-		_ = s.current().store.db.QueryRow(`SELECT count(*) FROM ` + c.table).Scan(c.dst)
+		_ = a.store.db.QueryRow(`SELECT count(*) FROM ` + c.table).Scan(c.dst)
 	}
 	st.Ready = true
+	if s.current() != a {
+		return
+	}
 	s.statsMu.Lock()
 	s.stats = st
 	s.statsMu.Unlock()
@@ -119,8 +138,14 @@ func (s *Server) datasetStats() datasetStats {
 
 // Config holds the server's tunables.
 type Config struct {
-	DBPath   string
+	DBPath string
+	// Version is reported on the info route.
+	Version  string
 	MaxWorks int
+	// EnableWebUI mounts the comparison console at /ui. It is off by default
+	// because the console is unauthenticated and makes the server query
+	// third-party services on a visitor's behalf.
+	EnableWebUI bool
 	// OfficialBase is the reference service for the /ui console; empty
 	// selects the public rreading-glasses Hardcover instance.
 	OfficialBase string
@@ -147,45 +172,88 @@ func New(cfg Config) (*Server, error) {
 		cfg.OfficialBase = defaultOfficialBase
 	}
 	s := &Server{
+		version:      cfg.Version,
 		maxWorks:     cfg.MaxWorks,
 		officialBase: cfg.OfficialBase,
 		metrics:      newMetrics(),
-		dbPath:       cfg.DBPath,
+		webUI:        cfg.EnableWebUI,
 		minRatings:   cfg.MinRatings,
 		searchLangs:  map[string]bool{},
+	}
+	if s.version == "" {
+		s.version = "0.0.0-dev"
 	}
 	for _, l := range strings.Split(cfg.SearchLangs, ",") {
 		if l = strings.TrimSpace(l); l != "" {
 			s.searchLangs[l] = true
 		}
 	}
-	s.app.Store(&app{store: st})
+	a := &app{store: st, path: cfg.DBPath}
+	s.app.Store(a)
 	if cfg.HCToken != "" {
 		s.hc = hcapi.NewClient(cfg.HCToken)
 	}
-	go s.loadStats()
+	go s.loadStats(a)
 	return s, nil
+}
+
+// Validate opens the dataset at path, proves it can serve a lookup, and
+// closes it again. The updater runs it on a download before installing it.
+func Validate(path string) error {
+	st, err := openStore(path)
+	if err != nil {
+		return err
+	}
+	defer st.db.Close()
+	return st.probe(context.Background())
 }
 
 // current returns the app serving requests right now.
 func (s *Server) current() *app { return s.app.Load() }
 
+// Probe runs a real lookup against the dataset currently serving, for the
+// health route.
+func (s *Server) Probe(ctx context.Context) error { return s.current().store.probe(ctx) }
+
 // Swap installs a freshly opened dataset and closes the previous one after a
 // grace window, which is far longer than any request takes, so nothing
-// in flight touches a closed database.
+// in flight touches a closed database. The old store's connections are
+// pinned to the file they opened, so it keeps serving the old dataset until
+// then even though the path now names the new file.
 func (s *Server) Swap(dbPath string) error {
 	st, err := openStore(dbPath)
 	if err != nil {
 		return err
 	}
-	old := s.app.Swap(&app{store: st})
-	s.dbPath = dbPath
-	go s.loadStats()
+	if err := st.probe(context.Background()); err != nil {
+		st.db.Close()
+		return err
+	}
+	a := &app{store: st, path: dbPath}
+	old := s.app.Swap(a)
+	go s.loadStats(a)
 	if old != nil && old.store != nil && old.store != st {
 		time.AfterFunc(30*time.Second, func() { _ = old.store.db.Close() })
 	}
 	return nil
 }
+
+// Close releases the dataset. It is for shutdown, not for a swap.
+func (s *Server) Close() error {
+	if a := s.current(); a != nil && a.store != nil {
+		return a.store.db.Close()
+	}
+	return nil
+}
+
+// bulkLimit caps how many editions one /book/bulk request may resolve. Each
+// id costs several queries and a full resource assembly, and Readarr never
+// asks for more than a page at a time.
+const bulkLimit = 100
+
+// maxBulkBody bounds the POST body of /book/bulk, which carries a JSON list
+// of ids and nothing else.
+const maxBulkBody = 1 << 20
 
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
@@ -204,6 +272,13 @@ func (s *Server) Handler() http.Handler {
 	// The console's own probes use the raw api handler, so only real client
 	// traffic is instrumented into the history and counters.
 	mux.Handle("/", s.instrument(api))
+	// The root answers so that anything probing "is a server here" (the
+	// switch script does, before it repoints Readarr) gets a yes, with
+	// enough about the dataset to tell one instance from another.
+	mux.HandleFunc("GET /{$}", s.handleInfo)
+	// The healthcheck runs a real lookup, and stays out of the request
+	// history so a 30-second poll does not crowd out real traffic.
+	mux.HandleFunc("GET /healthz", s.handleHealth)
 	// Browsers visiting the console request this; keep it out of the API
 	// history and error counters.
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
@@ -211,16 +286,48 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		_, _ = w.Write([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><text y="13" font-size="13">&#128214;</text></svg>`))
 	})
-	s.mountUI(mux, api)
+	if s.webUI {
+		s.mountUI(mux, api)
+	}
 	return mux
 }
 
-func (s *Server) error(w http.ResponseWriter, err error) {
-	status := http.StatusInternalServerError
-	if errors.Is(err, errNotFound) {
-		status = http.StatusNotFound
+// handleInfo describes the running instance: its version and what dataset
+// it is serving.
+func (s *Server) handleInfo(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]any{
+		"service": "readarr-metadata-provider",
+		"version": s.version,
+		"dataset": s.datasetStats(),
+	})
+}
+
+// handleHealth answers 200 only when the served dataset can actually answer
+// a lookup, so an orchestrator sees "cannot serve" rather than "process
+// exists".
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.Probe(ctx); err != nil {
+		log.Printf("health probe failed: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "unhealthy", "error": err.Error()})
+		return
 	}
-	http.Error(w, err.Error(), status)
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// error answers a handler failure. Not-found is reported as such; anything
+// else is logged with its detail and answered with a generic 500, since a
+// database error message is for the operator, not the client.
+func (s *Server) error(w http.ResponseWriter, err error) {
+	if errors.Is(err, errNotFound) {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	log.Printf("request failed: %v", err)
+	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -257,25 +364,26 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	a := s.current()
 
 	var workIDs []int64
 	normalized := strings.ReplaceAll(query, "-", "")
 	switch {
 	case asinPattern.MatchString(query):
-		if editionID, err := s.current().store.editionByASIN(query); err == nil {
-			if workID, err := s.current().store.workIDForEdition(editionID); err == nil {
+		if editionID, err := a.store.editionByASIN(query); err == nil {
+			if workID, err := a.store.workIDForEdition(editionID); err == nil {
 				workIDs = []int64{workID}
 			}
 		}
 	case isbnPattern.MatchString(normalized):
-		if editionID, err := s.current().store.editionByISBN(strings.ToUpper(normalized)); err == nil {
-			if workID, err := s.current().store.workIDForEdition(editionID); err == nil {
+		if editionID, err := a.store.editionByISBN(strings.ToUpper(normalized)); err == nil {
+			if workID, err := a.store.workIDForEdition(editionID); err == nil {
 				workIDs = []int64{workID}
 			}
 		}
 	default:
 		var err error
-		workIDs, err = s.current().store.searchWorks(query, 30)
+		workIDs, err = a.store.searchWorks(query, 30)
 		if err != nil {
 			s.error(w, err)
 			return
@@ -285,7 +393,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	results := []searchResource{}
 	var belowCutoff []searchResource
 	for _, workID := range workIDs {
-		b, err := s.current().store.work(workID)
+		b, err := a.store.work(workID)
 		if err != nil {
 			continue
 		}
@@ -324,7 +432,8 @@ func (s *Server) getWork(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
-	b, err := s.current().store.work(id)
+	a := s.current()
+	b, err := a.store.work(id)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -332,11 +441,11 @@ func (s *Server) getWork(w http.ResponseWriter, r *http.Request) {
 	// Duplicate works carry a canonical_id; serve the canonical work like
 	// upstream does.
 	if b.CanonicalID != nil && *b.CanonicalID != 0 {
-		if canonical, err := s.current().store.work(*b.CanonicalID); err == nil {
+		if canonical, err := a.store.work(*b.CanonicalID); err == nil {
 			b = canonical
 		}
 	}
-	work, err := s.current().workResource(b, 0, map[int64]*rawSeries{})
+	work, err := a.workResource(b, 0, map[int64]*rawSeries{})
 	if err != nil {
 		s.error(w, err)
 		return
@@ -355,12 +464,13 @@ func (s *Server) getBook(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
-	workID, err := s.current().store.workIDForEdition(editionID)
+	a := s.current()
+	workID, err := a.store.workIDForEdition(editionID)
 	if err != nil {
 		s.error(w, err)
 		return
 	}
-	b, err := s.current().store.work(workID)
+	b, err := a.store.work(workID)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -374,7 +484,14 @@ func (s *Server) getBook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getASIN(w http.ResponseWriter, r *http.Request) {
-	asin := strings.TrimSpace(r.PathValue("asin"))
+	if noopDelete(w, r) {
+		return
+	}
+	asin := strings.ToUpper(strings.TrimSpace(r.PathValue("asin")))
+	if !asinPattern.MatchString(asin) {
+		s.error(w, fmt.Errorf("%w: bad asin", errNotFound))
+		return
+	}
 	editionID, err := s.current().store.editionByASIN(asin)
 	if err != nil {
 		s.error(w, err)
@@ -384,6 +501,9 @@ func (s *Server) getASIN(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getISBN(w http.ResponseWriter, r *http.Request) {
+	if noopDelete(w, r) {
+		return
+	}
 	isbn := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(r.PathValue("isbn")), "-", ""))
 	if !isbnPattern.MatchString(isbn) {
 		s.error(w, fmt.Errorf("%w: bad isbn", errNotFound))
@@ -407,6 +527,7 @@ func (s *Server) getAuthor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a := s.current()
 	// A /book/{id} redirect lands here: return the author with only the
 	// requested edition's work attached.
 	if edition := r.URL.Query().Get("edition"); edition != "" {
@@ -415,29 +536,29 @@ func (s *Server) getAuthor(w http.ResponseWriter, r *http.Request) {
 			s.error(w, fmt.Errorf("%w: bad edition %q", errNotFound, edition))
 			return
 		}
-		workID, err := s.current().store.workIDForEdition(editionID)
+		workID, err := a.store.workIDForEdition(editionID)
 		if err != nil {
 			s.error(w, err)
 			return
 		}
-		b, err := s.current().store.work(workID)
+		b, err := a.store.work(workID)
 		if err != nil {
 			s.error(w, err)
 			return
 		}
-		work, err := s.current().workResource(b, editionID, map[int64]*rawSeries{})
+		work, err := a.workResource(b, editionID, map[int64]*rawSeries{})
 		if err != nil {
 			s.error(w, err)
 			return
 		}
 		author := work.Authors[0]
 		author.Works = []workResource{*work}
-		author.RatingCount, author.AverageRating = s.current().store.authorAggregates(author.ForeignID)
+		author.RatingCount, author.AverageRating = a.store.authorAggregates(author.ForeignID)
 		writeJSON(w, author)
 		return
 	}
 
-	author, err := s.current().authorResource(id, s.maxWorks)
+	author, err := a.authorResource(id, s.maxWorks)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -460,12 +581,13 @@ func (s *Server) getSeries(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
-	sr, err := s.current().store.series(id)
+	a := s.current()
+	sr, err := a.store.series(id)
 	if err != nil {
 		s.error(w, err)
 		return
 	}
-	links, err := s.current().store.seriesWorks(id, s.maxWorks)
+	links, err := a.store.seriesWorks(id, s.maxWorks)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -495,9 +617,13 @@ func (s *Server) bulkBook(w http.ResponseWriter, r *http.Request) {
 	// POSTs redirect to a cacheable GET, matching upstream.
 	if r.Method == http.MethodPost {
 		var ids []int64
-		if err := json.NewDecoder(r.Body).Decode(&ids); err != nil || len(ids) == 0 {
+		body := http.MaxBytesReader(w, r.Body, maxBulkBody)
+		if err := json.NewDecoder(body).Decode(&ids); err != nil || len(ids) == 0 {
 			s.error(w, fmt.Errorf("%w: missing ids", errNotFound))
 			return
+		}
+		if len(ids) > bulkLimit {
+			ids = ids[:bulkLimit]
 		}
 		query := url.Values{}
 		for _, id := range ids {
@@ -515,21 +641,26 @@ func (s *Server) bulkBook(w http.ResponseWriter, r *http.Request) {
 	seriesCache := map[int64]*rawSeries{}
 	seenAuthors := map[int64]bool{}
 	seenSeries := map[int64]bool{}
+	a := s.current()
 
-	for _, idStr := range r.URL.Query()["id"] {
+	ids := r.URL.Query()["id"]
+	if len(ids) > bulkLimit {
+		ids = ids[:bulkLimit]
+	}
+	for _, idStr := range ids {
 		editionID, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
 			continue
 		}
-		workID, err := s.current().store.workIDForEdition(editionID)
+		workID, err := a.store.workIDForEdition(editionID)
 		if err != nil {
 			continue
 		}
-		b, err := s.current().store.work(workID)
+		b, err := a.store.work(workID)
 		if err != nil {
 			continue
 		}
-		work, err := s.current().workResource(b, editionID, seriesCache)
+		work, err := a.workResource(b, editionID, seriesCache)
 		if err != nil {
 			continue
 		}

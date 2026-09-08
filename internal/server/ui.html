@@ -208,13 +208,16 @@ function side(s, otherIDs, otherFailed) {
   h += `<div class="colbody">`;
   for (const it of s.items) {
     const cls = otherFailed ? 'match' : (otherIDs.has(it.workId) ? 'match' : 'mismatch');
-    const tag = it.url ? `a href="${esc(it.url)}" target="_blank" rel="noopener"` : 'div';
+    // Only http(s) links are rendered as links; anything else an upstream
+    // response might carry is shown as plain text.
+    const link = it.url && /^https?:\/\//i.test(it.url);
+    const tag = link ? `a href="${esc(it.url)}" target="_blank" rel="noopener"` : 'div';
     h += `<${tag} class="row ${cls}">
       ${it.image ? `<img loading="lazy" src="${esc(it.image)}" alt="">` : `<div class="noimg"></div>`}
       <div><div class="t">${esc(it.title)}</div><div class="s">${esc(it.subtitle || '')}</div></div>
-      <div class="r">${it.ratings ? `★ ${it.rating.toFixed(2)}<br>${it.ratings.toLocaleString()} ratings` : ''}
+      <div class="r">${it.ratings ? `★ ${Number(it.rating || 0).toFixed(2)}<br>${it.ratings.toLocaleString()} ratings` : ''}
         <br>w${it.workId}</div>
-    </${it.url ? 'a' : 'div'}>`;
+    </${link ? 'a' : 'div'}>`;
   }
   return h + `</div>`;
 }
